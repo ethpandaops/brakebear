@@ -1,0 +1,37 @@
+#cloud-config
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - wget
+
+runcmd:
+  # Install Docker
+  - mkdir -m 0755 -p /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl start docker
+  - systemctl enable docker
+  - usermod -aG docker ubuntu
+  - cat /etc/passwd
+
+  # Install Go 1.23
+  - rm -rf /usr/local/go
+  - wget -O /tmp/go1.23.1.linux-amd64.tar.gz https://golang.org/dl/go1.23.1.linux-amd64.tar.gz
+  - tar -C /usr/local -xzf /tmp/go1.23.1.linux-amd64.tar.gz
+  - rm /tmp/go1.23.1.linux-amd64.tar.gz
+
+write_files:
+  - path: /etc/profile.d/go.sh
+    content: |
+      export PATH=$PATH:/usr/local/go/bin
+      export GOPATH=$HOME/go
+      export PATH=$PATH:$GOPATH/bin
+    permissions: '0644'
