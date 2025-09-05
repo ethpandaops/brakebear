@@ -2,11 +2,12 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	brakebeartypes "github.com/ethpandaops/brakebear/internal/types"
 	"github.com/sirupsen/logrus"
@@ -75,7 +76,7 @@ func (i *Inspector) GetContainerNetworkNamespace(ctx context.Context, containerI
 
 	cli := i.client.GetClient()
 	if cli == nil {
-		return "", fmt.Errorf("Docker client not initialized")
+		return "", errors.New("docker client not initialized")
 	}
 
 	// Inspect the container to get detailed information
@@ -103,7 +104,7 @@ func (i *Inspector) ListContainers(ctx context.Context) ([]brakebeartypes.Contai
 
 	cli := i.client.GetClient()
 	if cli == nil {
-		return nil, fmt.Errorf("Docker client not initialized")
+		return nil, errors.New("docker client not initialized")
 	}
 
 	// List only running containers
@@ -222,18 +223,18 @@ func (i *Inspector) matchesLabels(containerLabels map[string]string, targetLabel
 }
 
 // extractNetnsPath extracts the network namespace path from container inspection data
-func (i *Inspector) extractNetnsPath(inspect types.ContainerJSON) (string, error) {
+func (i *Inspector) extractNetnsPath(inspect container.InspectResponse) (string, error) {
 	if inspect.State == nil {
-		return "", fmt.Errorf("container state information not available")
+		return "", errors.New("container state information not available")
 	}
 
 	pid := inspect.State.Pid
 	if pid == 0 {
-		return "", fmt.Errorf("container PID not available or container not running")
+		return "", errors.New("container PID not available or container not running")
 	}
 
 	// Construct the network namespace path
-	netnsPath := filepath.Join("/proc", fmt.Sprintf("%d", pid), "ns", "net")
+	netnsPath := filepath.Join("/proc", strconv.Itoa(pid), "ns", "net")
 
 	i.log.WithFields(logrus.Fields{
 		"container_id": inspect.ID,

@@ -41,7 +41,7 @@ type ContainerConfig struct {
 // LoadConfig loads configuration from a YAML file using viper
 func LoadConfig(path string) (*Config, error) {
 	if path == "" {
-		return nil, fmt.Errorf("configuration file path cannot be empty")
+		return nil, errors.New("configuration file path cannot be empty")
 	}
 
 	// Check if file exists
@@ -111,123 +111,20 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// validate validates a single container configuration
-func (c *ContainerConfig) validate() error {
-	// Ensure mutually exclusive identifiers
-	identifierCount := 0
-	if c.Name != "" {
-		identifierCount++
-	}
-	if c.ID != "" {
-		identifierCount++
-	}
-	if len(c.Labels) > 0 {
-		identifierCount++
-	}
-
-	if identifierCount == 0 {
-		return errors.New("container must be identified by name, id, or labels")
-	}
-	if identifierCount > 1 {
-		return errors.New("container identifiers (name, id, labels) are mutually exclusive - only one can be set")
-	}
-
-	// Validate network parameters if they are set
-	if c.DownloadRate != "" {
-		if _, err := types.ParseRate(c.DownloadRate); err != nil {
-			return fmt.Errorf("invalid download_rate: %w", err)
-		}
-	}
-
-	if c.UploadRate != "" {
-		if _, err := types.ParseRate(c.UploadRate); err != nil {
-			return fmt.Errorf("invalid upload_rate: %w", err)
-		}
-	}
-
-	if c.Latency != "" {
-		if _, err := types.ParseDuration(c.Latency); err != nil {
-			return fmt.Errorf("invalid latency: %w", err)
-		}
-	}
-
-	if c.Jitter != "" {
-		if _, err := types.ParseDuration(c.Jitter); err != nil {
-			return fmt.Errorf("invalid jitter: %w", err)
-		}
-	}
-
-	if c.Loss != "" {
-		if _, err := types.ParseLoss(c.Loss); err != nil {
-			return fmt.Errorf("invalid loss: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// getUniqueIdentifier returns a unique string identifier for this container configuration
-func (c *ContainerConfig) getUniqueIdentifier() string {
-	if c.Name != "" {
-		return fmt.Sprintf("name:%s", c.Name)
-	}
-	if c.ID != "" {
-		return fmt.Sprintf("id:%s", c.ID)
-	}
-	if len(c.Labels) > 0 {
-		// Create a consistent string representation of labels
-		return fmt.Sprintf("labels:%v", c.Labels)
-	}
-	return "unknown"
-}
-
 // ToNetworkLimits converts the container configuration to NetworkLimits using types.Parse* functions
 func (c *ContainerConfig) ToNetworkLimits() (*types.NetworkLimits, error) {
 	limits := &types.NetworkLimits{}
 
-	// Parse download rate
-	if c.DownloadRate != "" {
-		rate, err := types.ParseRate(c.DownloadRate)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse download rate: %w", err)
-		}
-		limits.DownloadRate = rate
+	if err := c.parseRates(limits); err != nil {
+		return nil, err
 	}
 
-	// Parse upload rate
-	if c.UploadRate != "" {
-		rate, err := types.ParseRate(c.UploadRate)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse upload rate: %w", err)
-		}
-		limits.UploadRate = rate
+	if err := c.parseDurations(limits); err != nil {
+		return nil, err
 	}
 
-	// Parse latency
-	if c.Latency != "" {
-		latency, err := types.ParseDuration(c.Latency)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse latency: %w", err)
-		}
-		limits.Latency = latency
-	}
-
-	// Parse jitter
-	if c.Jitter != "" {
-		jitter, err := types.ParseDuration(c.Jitter)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse jitter: %w", err)
-		}
-		limits.Jitter = jitter
-	}
-
-	// Parse loss
-	if c.Loss != "" {
-		loss, err := types.ParseLoss(c.Loss)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse loss: %w", err)
-		}
-		limits.Loss = loss
+	if err := c.parseLoss(limits); err != nil {
+		return nil, err
 	}
 
 	return limits, nil
@@ -257,4 +154,164 @@ func (c *ContainerConfig) GetIdentifier() types.ContainerIdentifier {
 	// This should never happen if validation is done properly
 	logrus.Warn("Container configuration has no valid identifier")
 	return types.ContainerIdentifier{}
+}
+
+// validate validates a single container configuration
+func (c *ContainerConfig) validate() error {
+	if err := c.validateIdentifiers(); err != nil {
+		return err
+	}
+
+	if err := c.validateNetworkParams(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// getUniqueIdentifier returns a unique string identifier for this container configuration
+func (c *ContainerConfig) getUniqueIdentifier() string {
+	if c.Name != "" {
+		return "name:" + c.Name
+	}
+	if c.ID != "" {
+		return "id:" + c.ID
+	}
+	if len(c.Labels) > 0 {
+		// Create a consistent string representation of labels
+		return fmt.Sprintf("labels:%v", c.Labels)
+	}
+	return "unknown"
+}
+
+func (c *ContainerConfig) parseRates(limits *types.NetworkLimits) error {
+	if c.DownloadRate != "" {
+		rate, err := types.ParseRate(c.DownloadRate)
+		if err != nil {
+			return fmt.Errorf("failed to parse download rate: %w", err)
+		}
+		limits.DownloadRate = rate
+	}
+
+	if c.UploadRate != "" {
+		rate, err := types.ParseRate(c.UploadRate)
+		if err != nil {
+			return fmt.Errorf("failed to parse upload rate: %w", err)
+		}
+		limits.UploadRate = rate
+	}
+
+	return nil
+}
+
+func (c *ContainerConfig) parseDurations(limits *types.NetworkLimits) error {
+	if c.Latency != "" {
+		latency, err := types.ParseDuration(c.Latency)
+		if err != nil {
+			return fmt.Errorf("failed to parse latency: %w", err)
+		}
+		limits.Latency = latency
+	}
+
+	if c.Jitter != "" {
+		jitter, err := types.ParseDuration(c.Jitter)
+		if err != nil {
+			return fmt.Errorf("failed to parse jitter: %w", err)
+		}
+		limits.Jitter = jitter
+	}
+
+	return nil
+}
+
+func (c *ContainerConfig) parseLoss(limits *types.NetworkLimits) error {
+	if c.Loss != "" {
+		loss, err := types.ParseLoss(c.Loss)
+		if err != nil {
+			return fmt.Errorf("failed to parse loss: %w", err)
+		}
+		limits.Loss = loss
+	}
+
+	return nil
+}
+
+func (c *ContainerConfig) validateIdentifiers() error {
+	identifierCount := 0
+	if c.Name != "" {
+		identifierCount++
+	}
+	if c.ID != "" {
+		identifierCount++
+	}
+	if len(c.Labels) > 0 {
+		identifierCount++
+	}
+
+	if identifierCount == 0 {
+		return errors.New("container must be identified by name, id, or labels")
+	}
+	if identifierCount > 1 {
+		return errors.New("container identifiers (name, id, labels) are mutually exclusive - only one can be set")
+	}
+
+	return nil
+}
+
+func (c *ContainerConfig) validateNetworkParams() error {
+	if err := c.validateRateParams(); err != nil {
+		return err
+	}
+
+	if err := c.validateDurationParams(); err != nil {
+		return err
+	}
+
+	if err := c.validateLossParam(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *ContainerConfig) validateRateParams() error {
+	if c.DownloadRate != "" {
+		if _, err := types.ParseRate(c.DownloadRate); err != nil {
+			return fmt.Errorf("invalid download_rate: %w", err)
+		}
+	}
+
+	if c.UploadRate != "" {
+		if _, err := types.ParseRate(c.UploadRate); err != nil {
+			return fmt.Errorf("invalid upload_rate: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (c *ContainerConfig) validateDurationParams() error {
+	if c.Latency != "" {
+		if _, err := types.ParseDuration(c.Latency); err != nil {
+			return fmt.Errorf("invalid latency: %w", err)
+		}
+	}
+
+	if c.Jitter != "" {
+		if _, err := types.ParseDuration(c.Jitter); err != nil {
+			return fmt.Errorf("invalid jitter: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (c *ContainerConfig) validateLossParam() error {
+	if c.Loss != "" {
+		if _, err := types.ParseLoss(c.Loss); err != nil {
+			return fmt.Errorf("invalid loss: %w", err)
+		}
+	}
+
+	return nil
 }

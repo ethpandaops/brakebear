@@ -120,7 +120,7 @@ func (n *NetnsManager) ExecuteInNamespace(nsPath string, fn func() error) error 
 	exitErr := n.ExitNamespace(originalNs)
 	if exitErr != nil {
 		if fnErr != nil {
-			return fmt.Errorf("function error: %w, exit error: %v", fnErr, exitErr)
+			return fmt.Errorf("function error: %w, exit error: %w", fnErr, exitErr)
 		}
 		return fmt.Errorf("failed to exit namespace: %w", exitErr)
 	}

@@ -1,15 +1,17 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
 var (
-	cfgFile  string
-	logLevel string
-	rootCmd  = &cobra.Command{
+	cfgFile  string            //nolint:gochecknoglobals
+	logLevel string            //nolint:gochecknoglobals
+	rootCmd  = &cobra.Command{ //nolint:gochecknoglobals
 		Use:   "brakebear",
 		Short: "Docker container network bandwidth limiter",
 		Long:  `BrakeBear applies network bandwidth limits, latency, jitter, and packet loss to Docker containers using netns and tc.`,
@@ -19,10 +21,13 @@ var (
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() error {
-	return rootCmd.Execute()
+	if err := rootCmd.Execute(); err != nil {
+		return fmt.Errorf("command execution failed: %w", err)
+	}
+	return nil
 }
 
-func init() {
+func init() { //nolint:gochecknoinits
 	cobra.OnInitialize(initConfig)
 
 	// Global flags

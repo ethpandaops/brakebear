@@ -1,6 +1,8 @@
 package network
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -32,15 +34,15 @@ func NewController(log logrus.FieldLogger) *Controller {
 }
 
 // ApplyContainerLimits applies network limits to a container's network namespace
-func (c *Controller) ApplyContainerLimits(containerID string, nsPath string, limits *types.NetworkLimits) error {
+func (c *Controller) ApplyContainerLimits(ctx context.Context, containerID string, nsPath string, limits *types.NetworkLimits) error {
 	if containerID == "" {
-		return fmt.Errorf("container ID cannot be empty")
+		return errors.New("container ID cannot be empty")
 	}
 	if nsPath == "" {
-		return fmt.Errorf("namespace path cannot be empty")
+		return errors.New("namespace path cannot be empty")
 	}
 	if limits == nil {
-		return fmt.Errorf("network limits cannot be nil")
+		return errors.New("network limits cannot be nil")
 	}
 
 	c.mu.Lock()
@@ -53,7 +55,7 @@ func (c *Controller) ApplyContainerLimits(containerID string, nsPath string, lim
 	}).Info("Applying container network limits")
 
 	// Execute the traffic control operations within the container's network namespace
-	if err := c.applyLimitsInNamespace(nsPath, limits); err != nil {
+	if err := c.applyLimitsInNamespace(ctx, nsPath, limits); err != nil {
 		return fmt.Errorf("failed to apply limits in namespace %s for container %s: %w", nsPath, containerID, err)
 	}
 
@@ -66,12 +68,12 @@ func (c *Controller) ApplyContainerLimits(containerID string, nsPath string, lim
 }
 
 // RemoveContainerLimits removes network limits from a container's network namespace
-func (c *Controller) RemoveContainerLimits(containerID string, nsPath string) error {
+func (c *Controller) RemoveContainerLimits(ctx context.Context, containerID string, nsPath string) error {
 	if containerID == "" {
-		return fmt.Errorf("container ID cannot be empty")
+		return errors.New("container ID cannot be empty")
 	}
 	if nsPath == "" {
-		return fmt.Errorf("namespace path cannot be empty")
+		return errors.New("namespace path cannot be empty")
 	}
 
 	c.mu.Lock()
@@ -83,7 +85,7 @@ func (c *Controller) RemoveContainerLimits(containerID string, nsPath string) er
 	}).Info("Removing container network limits")
 
 	// Execute the traffic control removal within the container's network namespace
-	if err := c.removeLimitsInNamespace(nsPath); err != nil {
+	if err := c.removeLimitsInNamespace(ctx, nsPath); err != nil {
 		return fmt.Errorf("failed to remove limits in namespace %s for container %s: %w", nsPath, containerID, err)
 	}
 
@@ -96,15 +98,15 @@ func (c *Controller) RemoveContainerLimits(containerID string, nsPath string) er
 }
 
 // UpdateContainerLimits updates network limits for a container's network namespace
-func (c *Controller) UpdateContainerLimits(containerID string, nsPath string, limits *types.NetworkLimits) error {
+func (c *Controller) UpdateContainerLimits(ctx context.Context, containerID string, nsPath string, limits *types.NetworkLimits) error {
 	if containerID == "" {
-		return fmt.Errorf("container ID cannot be empty")
+		return errors.New("container ID cannot be empty")
 	}
 	if nsPath == "" {
-		return fmt.Errorf("namespace path cannot be empty")
+		return errors.New("namespace path cannot be empty")
 	}
 	if limits == nil {
-		return fmt.Errorf("network limits cannot be nil")
+		return errors.New("network limits cannot be nil")
 	}
 
 	c.mu.Lock()
@@ -117,7 +119,7 @@ func (c *Controller) UpdateContainerLimits(containerID string, nsPath string, li
 	}).Info("Updating container network limits")
 
 	// Remove existing limits first, then apply new ones
-	if err := c.removeLimitsInNamespace(nsPath); err != nil {
+	if err := c.removeLimitsInNamespace(ctx, nsPath); err != nil {
 		c.log.WithFields(logrus.Fields{
 			"container_id": containerID,
 			"namespace":    nsPath,
@@ -126,7 +128,7 @@ func (c *Controller) UpdateContainerLimits(containerID string, nsPath string, li
 	}
 
 	// Apply new limits
-	if err := c.applyLimitsInNamespace(nsPath, limits); err != nil {
+	if err := c.applyLimitsInNamespace(ctx, nsPath, limits); err != nil {
 		return fmt.Errorf("failed to apply updated limits in namespace %s for container %s: %w", nsPath, containerID, err)
 	}
 
@@ -139,7 +141,7 @@ func (c *Controller) UpdateContainerLimits(containerID string, nsPath string, li
 }
 
 // applyLimitsInNamespace applies traffic control limits within a network namespace
-func (c *Controller) applyLimitsInNamespace(nsPath string, limits *types.NetworkLimits) error {
+func (c *Controller) applyLimitsInNamespace(ctx context.Context, nsPath string, limits *types.NetworkLimits) error {
 	c.log.WithFields(logrus.Fields{
 		"namespace": nsPath,
 		"limits":    fmt.Sprintf("%+v", limits),
@@ -173,7 +175,7 @@ func (c *Controller) applyLimitsInNamespace(nsPath string, limits *types.Network
 				"interface": iface,
 			}).Debug("Applying limits to interface")
 
-			if err := c.tcManager.ApplyLimits(iface, limits); err != nil {
+			if err := c.tcManager.ApplyLimits(ctx, iface, limits); err != nil {
 				c.log.WithFields(logrus.Fields{
 					"namespace": nsPath,
 					"interface": iface,
@@ -208,7 +210,7 @@ func (c *Controller) applyLimitsInNamespace(nsPath string, limits *types.Network
 }
 
 // removeLimitsInNamespace removes traffic control limits within a network namespace
-func (c *Controller) removeLimitsInNamespace(nsPath string) error {
+func (c *Controller) removeLimitsInNamespace(ctx context.Context, nsPath string) error {
 	c.log.WithField("namespace", nsPath).Debug("Removing limits in network namespace")
 
 	// Execute within the network namespace
@@ -236,7 +238,7 @@ func (c *Controller) removeLimitsInNamespace(nsPath string) error {
 				"interface": iface,
 			}).Debug("Removing limits from interface")
 
-			if err := c.tcManager.RemoveLimits(iface); err != nil {
+			if err := c.tcManager.RemoveLimits(ctx, iface); err != nil {
 				// Log but don't fail - limits might not exist
 				c.log.WithFields(logrus.Fields{
 					"namespace": nsPath,

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -14,14 +15,14 @@ import (
 	"github.com/ethpandaops/brakebear/internal/service"
 )
 
-var runCmd = &cobra.Command{
+var runCmd = &cobra.Command{ //nolint:gochecknoglobals
 	Use:   "run",
 	Short: "Run BrakeBear daemon",
 	Long:  `Start BrakeBear daemon to monitor Docker containers and apply network limits.`,
 	RunE:  runBrakeBear,
 }
 
-func init() {
+func init() { //nolint:gochecknoinits
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -56,7 +57,7 @@ func runBrakeBear(cmd *cobra.Command, args []string) error {
 	// Create and start the BrakeBear service
 	brakebearService := service.NewService(cfg, logrus.WithField("package", "service"))
 	if brakebearService == nil {
-		return fmt.Errorf("failed to create BrakeBear service")
+		return errors.New("failed to create BrakeBear service")
 	}
 
 	logrus.Info("BrakeBear daemon started successfully")
@@ -73,7 +74,7 @@ func runBrakeBear(cmd *cobra.Command, args []string) error {
 	// Gracefully stop the service
 	if err := brakebearService.Stop(); err != nil {
 		logrus.WithError(err).Error("Error during service shutdown")
-		return err
+		return fmt.Errorf("failed to stop BrakeBear service: %w", err)
 	}
 
 	logrus.Info("BrakeBear daemon stopped gracefully")

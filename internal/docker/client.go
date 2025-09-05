@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/docker/docker/client"
@@ -17,7 +18,7 @@ type Client struct {
 // NewClient creates a new Docker client with API version negotiation
 func NewClient(log logrus.FieldLogger) (*Client, error) {
 	if log == nil {
-		return nil, fmt.Errorf("logger cannot be nil")
+		return nil, errors.New("logger cannot be nil")
 	}
 
 	// Add package-specific fields to logger
@@ -74,14 +75,14 @@ func (c *Client) GetClient() *client.Client {
 // Ping verifies connectivity to the Docker daemon
 func (c *Client) Ping(ctx context.Context) error {
 	if c.client == nil {
-		return fmt.Errorf("Docker client not initialized")
+		return errors.New("docker client not initialized")
 	}
 
 	c.log.Debug("Pinging Docker daemon")
 
 	pong, err := c.client.Ping(ctx)
 	if err != nil {
-		return fmt.Errorf("Docker daemon ping failed: %w", err)
+		return fmt.Errorf("docker daemon ping failed: %w", err)
 	}
 
 	c.log.WithFields(logrus.Fields{

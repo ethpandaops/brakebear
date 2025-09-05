@@ -13,6 +13,30 @@ func ValidateContainerConfig(c ContainerConfig) error {
 		return fmt.Errorf("container identifier validation failed: %w", err)
 	}
 
+	if err := validateNetworkLimits(c); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateNetworkLimits(c ContainerConfig) error {
+	if err := validateRates(c); err != nil {
+		return err
+	}
+
+	if err := validateDurations(c); err != nil {
+		return err
+	}
+
+	if err := validateLoss(c); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateRates(c ContainerConfig) error {
 	if c.DownloadRate != "" {
 		if err := validateRateString(c.DownloadRate); err != nil {
 			return fmt.Errorf("invalid download_rate: %w", err)
@@ -25,6 +49,10 @@ func ValidateContainerConfig(c ContainerConfig) error {
 		}
 	}
 
+	return nil
+}
+
+func validateDurations(c ContainerConfig) error {
 	if c.Latency != "" {
 		if err := validateDurationString(c.Latency); err != nil {
 			return fmt.Errorf("invalid latency: %w", err)
@@ -37,6 +65,10 @@ func ValidateContainerConfig(c ContainerConfig) error {
 		}
 	}
 
+	return nil
+}
+
+func validateLoss(c ContainerConfig) error {
 	if c.Loss != "" {
 		if err := validateLossString(c.Loss); err != nil {
 			return fmt.Errorf("invalid loss: %w", err)

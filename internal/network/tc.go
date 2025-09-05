@@ -1,9 +1,12 @@
 package network
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -24,9 +27,9 @@ func NewTCManager(log logrus.FieldLogger) *TCManager {
 }
 
 // ApplyLimits applies network traffic control rules to the specified interface
-func (t *TCManager) ApplyLimits(ifaceName string, limits *types.NetworkLimits) error {
+func (t *TCManager) ApplyLimits(ctx context.Context, ifaceName string, limits *types.NetworkLimits) error {
 	if limits == nil {
-		return fmt.Errorf("network limits cannot be nil")
+		return errors.New("network limits cannot be nil")
 	}
 
 	t.log.WithFields(logrus.Fields{
@@ -35,146 +38,44 @@ func (t *TCManager) ApplyLimits(ifaceName string, limits *types.NetworkLimits) e
 	}).Info("Applying network limits")
 
 	// Remove existing rules first
-	if err := t.RemoveLimits(ifaceName); err != nil {
+	if err := t.RemoveLimits(ctx, ifaceName); err != nil {
 		t.log.WithField("interface", ifaceName).Debug("Failed to remove existing limits (may not exist)")
 	}
 
 	var commands [][]string
 
-	// Handle egress (upload) limits using HTB
-	if limits.UploadRate != nil {
-		rateStr := t.rateToTcString(limits.UploadRate)
-		if rateStr != "0" {
-			t.log.WithFields(logrus.Fields{
-				"interface":   ifaceName,
-				"upload_rate": rateStr,
-			}).Info("Setting up egress (upload) HTB limits")
-
-			// Create HTB root qdisc for egress with proper r2q
-			commands = append(commands, []string{
-				"tc", "qdisc", "add", "dev", ifaceName, "root", "handle", "1:", "htb", "default", "30",
-			})
-
-			// Create parent class
-			commands = append(commands, []string{
-				"tc", "class", "add", "dev", ifaceName, "parent", "1:", "classid", "1:2", "htb",
-				"rate", rateStr, "ceil", rateStr, "burst", "1b", "cburst", "1b",
-			})
-
-			// Add filter to classify all traffic to the limited class
-			commands = append(commands, []string{
-				"tc", "filter", "add", "dev", ifaceName, "parent", "1:", "protocol", "all", "prio", "1", "u32",
-				"match", "u32", "0", "0", "flowid", "1:2",
-			})
-
-			t.log.WithField("interface", ifaceName).Debug("Added HTB egress (upload) limits")
-		}
+	// Apply different types of limits
+	if err := t.applyUploadLimits(ifaceName, limits, &commands); err != nil {
+		return err
 	}
 
-	// Handle ingress (download) limits using IFB interface redirection
-	if limits.DownloadRate != nil {
-		rateStr := t.rateToTcString(limits.DownloadRate)
-		if rateStr != "0" {
-			ifbInterface := fmt.Sprintf("ifb-%s", ifaceName) // e.g., ifb-eth0
-
-			t.log.WithFields(logrus.Fields{
-				"interface":     ifaceName,
-				"ifb_interface": ifbInterface,
-				"download_rate": rateStr,
-			}).Info("Setting up download limits using IFB redirection")
-
-			// Step 1: Create and configure IFB interface
-			commands = append(commands, []string{
-				"ip", "link", "add", ifbInterface, "type", "ifb",
-			})
-			commands = append(commands, []string{
-				"ip", "link", "set", ifbInterface, "up",
-			})
-
-			// Step 2: Add HTB qdisc to IFB interface
-			commands = append(commands, []string{
-				"tc", "qdisc", "add", "dev", ifbInterface, "root", "handle", "1:", "htb", "default", "30",
-			})
-			commands = append(commands, []string{
-				"tc", "class", "add", "dev", ifbInterface, "parent", "1:", "classid", "1:2", "htb",
-				"rate", rateStr, "ceil", rateStr, "burst", "1b", "cburst", "1b",
-			})
-
-			// Add filter to classify all traffic to the limited class on IFB interface
-			commands = append(commands, []string{
-				"tc", "filter", "add", "dev", ifbInterface, "parent", "1:", "protocol", "all", "prio", "1", "u32",
-				"match", "u32", "0", "0", "flowid", "1:2",
-			})
-
-			// Step 3: Add ingress qdisc to main interface
-			commands = append(commands, []string{
-				"tc", "qdisc", "add", "dev", ifaceName, "handle", "ffff:", "ingress",
-			})
-
-			// Step 4: Redirect ingress traffic to IFB interface
-			commands = append(commands, []string{
-				"tc", "filter", "add", "dev", ifaceName, "parent", "ffff:", "protocol", "ip", "u32",
-				"match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", ifbInterface,
-			})
-
-			t.log.WithFields(logrus.Fields{
-				"interface":     ifaceName,
-				"ifb_interface": ifbInterface,
-			}).Debug("Added IFB-based download limits")
-		}
+	if err := t.applyDownloadLimits(ifaceName, limits, &commands); err != nil {
+		return err
 	}
 
-	// Apply network emulation (latency, jitter, loss) using netem
-	// Note: If we already have HTB for upload limiting, we can't add another root qdisc
-	// In that case, netem would need to be combined with HTB or applied differently
-	if limits.Latency != nil || limits.Jitter != nil || limits.Loss != nil {
-		if limits.UploadRate != nil && limits.UploadRate.ToBytes() > 0 {
-			// If we have upload limits, netem would conflict with HTB root qdisc
-			// Skip netem for now - this would require more complex setup
-			t.log.WithField("interface", ifaceName).Debug("Skipping netem because HTB is already applied for upload limits")
-		} else {
-			netemCmd := []string{"tc", "qdisc", "add", "dev", ifaceName, "root", "handle", "1:", "netem"}
-
-			if limits.Latency != nil {
-				latencyMs := limits.Latency.ToNanoseconds() / 1000000 // Convert to milliseconds
-				netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
-			}
-
-			if limits.Jitter != nil {
-				jitterMs := limits.Jitter.ToNanoseconds() / 1000000 // Convert to milliseconds
-				netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
-			}
-
-			if limits.Loss != nil {
-				netemCmd = append(netemCmd, "loss", fmt.Sprintf("%.2f%%", *limits.Loss))
-			}
-
-			commands = append(commands, netemCmd)
-			t.log.WithField("interface", ifaceName).Debug("Added netem network emulation")
-		}
+	if err := t.applyNetemLimits(ifaceName, limits, &commands); err != nil {
+		return err
 	}
 
 	// Execute all commands
-	for _, cmd := range commands {
-		if err := t.execCommand(cmd); err != nil {
-			return fmt.Errorf("failed to execute tc command %v: %w", cmd, err)
-		}
+	if err := t.executeCommands(ctx, commands); err != nil {
+		return err
 	}
 
 	// Add diagnostic commands to verify traffic control status
-	t.addDiagnostics(ifaceName, limits)
+	t.addDiagnostics(ctx, ifaceName, limits)
 
 	t.log.WithField("interface", ifaceName).Info("Successfully applied network limits")
 	return nil
 }
 
 // RemoveLimits removes all traffic control rules from the specified interface
-func (t *TCManager) RemoveLimits(ifaceName string) error {
+func (t *TCManager) RemoveLimits(ctx context.Context, ifaceName string) error {
 	t.log.WithField("interface", ifaceName).Debug("Removing network limits")
 
 	// Remove root qdisc - this removes all associated qdiscs, classes, and filters
 	cmd := []string{"tc", "qdisc", "del", "dev", ifaceName, "root"}
-	if err := t.execCommand(cmd); err != nil {
+	if err := t.execCommand(ctx, cmd); err != nil {
 		// Log but don't fail - qdisc might not exist
 		t.log.WithFields(logrus.Fields{
 			"interface": ifaceName,
@@ -184,7 +85,7 @@ func (t *TCManager) RemoveLimits(ifaceName string) error {
 
 	// Remove ingress qdisc if it exists
 	cmd = []string{"tc", "qdisc", "del", "dev", ifaceName, "ingress"}
-	if err := t.execCommand(cmd); err != nil {
+	if err := t.execCommand(ctx, cmd); err != nil {
 		t.log.WithFields(logrus.Fields{
 			"interface": ifaceName,
 			"error":     err,
@@ -192,9 +93,9 @@ func (t *TCManager) RemoveLimits(ifaceName string) error {
 	}
 
 	// Remove IFB interface if it exists
-	ifbInterface := fmt.Sprintf("ifb-%s", ifaceName)
+	ifbInterface := "ifb-" + ifaceName
 	cmd = []string{"ip", "link", "del", ifbInterface}
-	if err := t.execCommand(cmd); err != nil {
+	if err := t.execCommand(ctx, cmd); err != nil {
 		t.log.WithFields(logrus.Fields{
 			"interface":     ifaceName,
 			"ifb_interface": ifbInterface,
@@ -220,67 +121,8 @@ func (t *TCManager) getInterfaces() ([]string, error) {
 		return nil, fmt.Errorf("failed to list network interfaces: %w", err)
 	}
 
-	var interfaces []string
-	var ethInterfaces []string
-	var vethInterfaces []string
-
-	// Skip these interface types that don't carry actual traffic
-	skipPrefixes := []string{
-		"tunl",   // IP-in-IP tunnel interfaces
-		"sit",    // IPv6-in-IPv4 tunnel interfaces
-		"ip6tnl", // IPv6 tunnel interfaces
-		"gre",    // GRE tunnel interfaces
-		"ipip",   // IPIP tunnel interfaces
-		"ip6gre", // IPv6 GRE tunnel interfaces
-		"docker", // Docker bridge interfaces
-		"br-",    // Bridge interfaces
-		"virbr",  // Virtual bridge interfaces
-	}
-
-	for _, link := range links {
-		name := link.Attrs().Name
-		attrs := link.Attrs()
-
-		// Skip loopback
-		if name == "lo" {
-			continue
-		}
-
-		// Skip interfaces that don't carry actual traffic
-		skip := false
-		for _, prefix := range skipPrefixes {
-			if strings.HasPrefix(name, prefix) {
-				skip = true
-				t.log.WithField("interface", name).Debug("Skipping tunnel/virtual interface")
-				break
-			}
-		}
-		if skip {
-			continue
-		}
-
-		// Only include interfaces that are UP or could be brought UP
-		if attrs.OperState != netlink.OperUp && attrs.OperState != netlink.OperDown && attrs.OperState != netlink.OperUnknown {
-			t.log.WithFields(logrus.Fields{
-				"interface": name,
-				"state":     attrs.OperState,
-			}).Debug("Skipping interface due to operational state")
-			continue
-		}
-
-		// Categorize remaining interfaces
-		if strings.HasPrefix(name, "eth") {
-			ethInterfaces = append(ethInterfaces, name)
-		} else if strings.HasPrefix(name, "veth") {
-			vethInterfaces = append(vethInterfaces, name)
-		} else {
-			// For containers, we mainly care about eth and veth interfaces
-			t.log.WithField("interface", name).Debug("Skipping non-eth/veth interface")
-		}
-	}
-
-	// Prioritize eth0 first, then other eth interfaces, then veth interfaces
-	interfaces = append(interfaces, ethInterfaces...)
+	ethInterfaces, vethInterfaces := t.filterAndCategorizeInterfaces(links)
+	interfaces := append([]string{}, ethInterfaces...)
 	interfaces = append(interfaces, vethInterfaces...)
 
 	t.log.WithFields(logrus.Fields{
@@ -293,34 +135,92 @@ func (t *TCManager) getInterfaces() ([]string, error) {
 	return interfaces, nil
 }
 
+func (t *TCManager) filterAndCategorizeInterfaces(links []netlink.Link) ([]string, []string) {
+	var ethInterfaces, vethInterfaces []string
+	skipPrefixes := []string{
+		"tunl", "sit", "ip6tnl", "gre", "ipip", "ip6gre", "docker", "br-", "virbr",
+	}
+
+	for _, link := range links {
+		name := link.Attrs().Name
+		attrs := link.Attrs()
+
+		if t.shouldSkipInterface(name, attrs, skipPrefixes) {
+			continue
+		}
+
+		t.categorizeInterface(name, &ethInterfaces, &vethInterfaces)
+	}
+
+	return ethInterfaces, vethInterfaces
+}
+
+func (t *TCManager) shouldSkipInterface(name string, attrs *netlink.LinkAttrs, skipPrefixes []string) bool {
+	// Skip loopback
+	if name == "lo" {
+		return true
+	}
+
+	// Skip interfaces that don't carry actual traffic
+	for _, prefix := range skipPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			t.log.WithField("interface", name).Debug("Skipping tunnel/virtual interface")
+			return true
+		}
+	}
+
+	// Only include interfaces that are UP or could be brought UP
+	if attrs.OperState != netlink.OperUp && attrs.OperState != netlink.OperDown && attrs.OperState != netlink.OperUnknown {
+		t.log.WithFields(logrus.Fields{
+			"interface": name,
+			"state":     attrs.OperState,
+		}).Debug("Skipping interface due to operational state")
+		return true
+	}
+
+	return false
+}
+
+func (t *TCManager) categorizeInterface(name string, ethInterfaces, vethInterfaces *[]string) {
+	switch {
+	case strings.HasPrefix(name, "eth"):
+		*ethInterfaces = append(*ethInterfaces, name)
+	case strings.HasPrefix(name, "veth"):
+		*vethInterfaces = append(*vethInterfaces, name)
+	default:
+		// For containers, we mainly care about eth and veth interfaces
+		t.log.WithField("interface", name).Debug("Skipping non-eth/veth interface")
+	}
+}
+
 // addDiagnostics runs diagnostic commands to verify traffic control status
-func (t *TCManager) addDiagnostics(ifaceName string, limits *types.NetworkLimits) {
+func (t *TCManager) addDiagnostics(ctx context.Context, ifaceName string, limits *types.NetworkLimits) {
 	t.log.WithField("interface", ifaceName).Info("Running traffic control diagnostics")
 
 	// Check qdisc status
 	diagCmd := []string{"tc", "qdisc", "show", "dev", ifaceName}
-	if err := t.execCommand(diagCmd); err != nil {
+	if err := t.execCommand(ctx, diagCmd); err != nil {
 		t.log.WithError(err).Warn("Failed to show qdisc status")
 	}
 
 	// Check class status if HTB is used
 	if limits.UploadRate != nil {
 		diagCmd = []string{"tc", "class", "show", "dev", ifaceName}
-		if err := t.execCommand(diagCmd); err != nil {
+		if err := t.execCommand(ctx, diagCmd); err != nil {
 			t.log.WithError(err).Warn("Failed to show class status")
 		}
 	}
 
 	// Check IFB interface if download limits exist
 	if limits.DownloadRate != nil {
-		ifbInterface := fmt.Sprintf("ifb-%s", ifaceName)
+		ifbInterface := "ifb-" + ifaceName
 		diagCmd = []string{"tc", "qdisc", "show", "dev", ifbInterface}
-		if err := t.execCommand(diagCmd); err != nil {
+		if err := t.execCommand(ctx, diagCmd); err != nil {
 			t.log.WithError(err).Warn("Failed to show IFB qdisc status")
 		}
 
 		diagCmd = []string{"tc", "class", "show", "dev", ifbInterface}
-		if err := t.execCommand(diagCmd); err != nil {
+		if err := t.execCommand(ctx, diagCmd); err != nil {
 			t.log.WithError(err).Warn("Failed to show IFB class status")
 		}
 	}
@@ -347,12 +247,30 @@ func (t *TCManager) rateToTcString(rate *types.Rate) string {
 }
 
 // execCommand executes a shell command and returns any error
-func (t *TCManager) execCommand(cmd []string) error {
+func (t *TCManager) execCommand(ctx context.Context, cmd []string) error {
+	if len(cmd) == 0 {
+		return errors.New("command cannot be empty")
+	}
+
+	// Validate that we're only executing allowed commands for security
+	allowedCommands := map[string]bool{
+		"tc": true,
+		"ip": true,
+	}
+
+	if !allowedCommands[cmd[0]] {
+		return fmt.Errorf("command not allowed: %s", cmd[0])
+	}
+
 	t.log.WithField("command", strings.Join(cmd, " ")).Info("Executing traffic control command")
 
-	execCmd := exec.Command(cmd[0], cmd[1:]...)
-	output, err := execCmd.CombinedOutput()
+	// Use context with timeout for command execution
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
+	// #nosec G204 - Command arguments are constructed internally and validated above
+	execCmd := exec.CommandContext(ctxWithTimeout, cmd[0], cmd[1:]...)
+	output, err := execCmd.CombinedOutput()
 	if err != nil {
 		t.log.WithFields(logrus.Fields{
 			"command": strings.Join(cmd, " "),
@@ -367,5 +285,139 @@ func (t *TCManager) execCommand(cmd []string) error {
 		"output":  string(output),
 	}).Info("Traffic control command executed successfully")
 
+	return nil
+}
+
+func (t *TCManager) applyUploadLimits(ifaceName string, limits *types.NetworkLimits, commands *[][]string) error {
+	if limits.UploadRate == nil {
+		return nil
+	}
+
+	rateStr := t.rateToTcString(limits.UploadRate)
+	if rateStr == "0" {
+		return nil
+	}
+
+	t.log.WithFields(logrus.Fields{
+		"interface":   ifaceName,
+		"upload_rate": rateStr,
+	}).Info("Setting up egress (upload) HTB limits")
+
+	// Create HTB root qdisc for egress
+	*commands = append(*commands, []string{
+		"tc", "qdisc", "add", "dev", ifaceName, "root", "handle", "1:", "htb", "default", "30",
+	})
+
+	// Create parent class
+	*commands = append(*commands, []string{
+		"tc", "class", "add", "dev", ifaceName, "parent", "1:", "classid", "1:2", "htb",
+		"rate", rateStr, "ceil", rateStr, "burst", "1b", "cburst", "1b",
+	})
+
+	// Add filter to classify all traffic to the limited class
+	*commands = append(*commands, []string{
+		"tc", "filter", "add", "dev", ifaceName, "parent", "1:", "protocol", "all", "prio", "1", "u32",
+		"match", "u32", "0", "0", "flowid", "1:2",
+	})
+
+	t.log.WithField("interface", ifaceName).Debug("Added HTB egress (upload) limits")
+	return nil
+}
+
+func (t *TCManager) applyDownloadLimits(ifaceName string, limits *types.NetworkLimits, commands *[][]string) error {
+	if limits.DownloadRate == nil {
+		return nil
+	}
+
+	rateStr := t.rateToTcString(limits.DownloadRate)
+	if rateStr == "0" {
+		return nil
+	}
+
+	ifbInterface := "ifb-" + ifaceName
+
+	t.log.WithFields(logrus.Fields{
+		"interface":     ifaceName,
+		"ifb_interface": ifbInterface,
+		"download_rate": rateStr,
+	}).Info("Setting up download limits using IFB redirection")
+
+	// Step 1: Create and configure IFB interface
+	*commands = append(*commands, []string{"ip", "link", "add", ifbInterface, "type", "ifb"})
+	*commands = append(*commands, []string{"ip", "link", "set", ifbInterface, "up"})
+
+	// Step 2: Add HTB qdisc to IFB interface
+	*commands = append(*commands, []string{
+		"tc", "qdisc", "add", "dev", ifbInterface, "root", "handle", "1:", "htb", "default", "30",
+	})
+	*commands = append(*commands, []string{
+		"tc", "class", "add", "dev", ifbInterface, "parent", "1:", "classid", "1:2", "htb",
+		"rate", rateStr, "ceil", rateStr, "burst", "1b", "cburst", "1b",
+	})
+
+	// Add filter to classify all traffic to the limited class on IFB interface
+	*commands = append(*commands, []string{
+		"tc", "filter", "add", "dev", ifbInterface, "parent", "1:", "protocol", "all", "prio", "1", "u32",
+		"match", "u32", "0", "0", "flowid", "1:2",
+	})
+
+	// Step 3: Add ingress qdisc to main interface
+	*commands = append(*commands, []string{
+		"tc", "qdisc", "add", "dev", ifaceName, "handle", "ffff:", "ingress",
+	})
+
+	// Step 4: Redirect ingress traffic to IFB interface
+	*commands = append(*commands, []string{
+		"tc", "filter", "add", "dev", ifaceName, "parent", "ffff:", "protocol", "ip", "u32",
+		"match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", ifbInterface,
+	})
+
+	t.log.WithFields(logrus.Fields{
+		"interface":     ifaceName,
+		"ifb_interface": ifbInterface,
+	}).Debug("Added IFB-based download limits")
+
+	return nil
+}
+
+func (t *TCManager) applyNetemLimits(ifaceName string, limits *types.NetworkLimits, commands *[][]string) error {
+	if limits.Latency == nil && limits.Jitter == nil && limits.Loss == nil {
+		return nil
+	}
+
+	// Check if we have upload limits that would conflict
+	if limits.UploadRate != nil && limits.UploadRate.ToBytes() > 0 {
+		t.log.WithField("interface", ifaceName).Debug("Skipping netem because HTB is already applied for upload limits")
+		return nil
+	}
+
+	netemCmd := []string{"tc", "qdisc", "add", "dev", ifaceName, "root", "handle", "1:", "netem"}
+
+	if limits.Latency != nil {
+		latencyMs := limits.Latency.ToNanoseconds() / 1000000
+		netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
+	}
+
+	if limits.Jitter != nil {
+		jitterMs := limits.Jitter.ToNanoseconds() / 1000000
+		netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
+	}
+
+	if limits.Loss != nil {
+		netemCmd = append(netemCmd, "loss", fmt.Sprintf("%.2f%%", *limits.Loss))
+	}
+
+	*commands = append(*commands, netemCmd)
+	t.log.WithField("interface", ifaceName).Debug("Added netem network emulation")
+
+	return nil
+}
+
+func (t *TCManager) executeCommands(ctx context.Context, commands [][]string) error {
+	for _, cmd := range commands {
+		if err := t.execCommand(ctx, cmd); err != nil {
+			return fmt.Errorf("failed to execute tc command %v: %w", cmd, err)
+		}
+	}
 	return nil
 }

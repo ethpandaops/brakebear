@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -32,7 +33,6 @@ type service struct {
 	controller *network.Controller
 	state      state.Manager
 	log        logrus.FieldLogger
-	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 }
@@ -64,7 +64,8 @@ func (s *service) Start(ctx context.Context) error {
 	s.log.Info("Starting BrakeBear service")
 
 	// Create cancellable context for service lifecycle
-	s.ctx, s.cancel = context.WithCancel(ctx)
+	serviceCtx, cancel := context.WithCancel(ctx)
+	s.cancel = cancel
 
 	// Initialize Docker client
 	var err error
@@ -74,7 +75,7 @@ func (s *service) Start(ctx context.Context) error {
 	}
 
 	// Start Docker client
-	if err := s.docker.Start(s.ctx); err != nil {
+	if err := s.docker.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start Docker client: %w", err)
 	}
 	s.log.Info("Docker client started successfully")
@@ -87,25 +88,25 @@ func (s *service) Start(ctx context.Context) error {
 	s.monitor = docker.NewMonitor(s.docker, s.inspector, s.log)
 
 	// Start state manager
-	if err := s.state.Start(s.ctx); err != nil {
+	if err := s.state.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start state manager: %w", err)
 	}
 	s.log.Info("State manager started successfully")
 
 	// Start Docker monitor
-	if err := s.monitor.Start(s.ctx); err != nil {
+	if err := s.monitor.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start Docker monitor: %w", err)
 	}
 	s.log.Info("Docker monitor started successfully")
 
 	// Apply initial configuration to existing containers
-	if err := s.applyConfiguration(); err != nil {
+	if err := s.applyConfiguration(ctx); err != nil {
 		s.log.WithError(err).Warn("Failed to apply initial configuration, continuing...")
 	}
 
 	// Start event processing goroutine
 	s.wg.Add(1)
-	go s.watchEvents(s.ctx)
+	go s.watchEvents(serviceCtx)
 
 	s.log.Info("BrakeBear service started successfully")
 	return nil
@@ -169,7 +170,7 @@ func (s *service) Stop() error {
 }
 
 // handleContainerEvent processes container lifecycle events
-func (s *service) handleContainerEvent(event docker.ContainerEvent) {
+func (s *service) handleContainerEvent(ctx context.Context, event docker.ContainerEvent) {
 	s.log.WithFields(logrus.Fields{
 		"event_type":   event.Type,
 		"container_id": event.ContainerID,
@@ -178,14 +179,14 @@ func (s *service) handleContainerEvent(event docker.ContainerEvent) {
 
 	switch event.Type {
 	case "start":
-		if err := s.handleContainerStart(event.ContainerID); err != nil {
+		if err := s.handleContainerStart(ctx, event.ContainerID); err != nil {
 			s.log.WithFields(logrus.Fields{
 				"container_id": event.ContainerID,
 				"error":        err,
 			}).Error("Failed to handle container start event")
 		}
 	case "stop", "die":
-		if err := s.handleContainerStop(event.ContainerID); err != nil {
+		if err := s.handleContainerStop(ctx, event.ContainerID); err != nil {
 			s.log.WithFields(logrus.Fields{
 				"container_id": event.ContainerID,
 				"error":        err,
@@ -194,7 +195,7 @@ func (s *service) handleContainerEvent(event docker.ContainerEvent) {
 	case "update":
 		// Container updated - reapply configuration if managed
 		if s.state.HasContainer(event.ContainerID) {
-			if err := s.handleContainerStart(event.ContainerID); err != nil {
+			if err := s.handleContainerStart(ctx, event.ContainerID); err != nil {
 				s.log.WithFields(logrus.Fields{
 					"container_id": event.ContainerID,
 					"error":        err,
@@ -210,25 +211,25 @@ func (s *service) handleContainerEvent(event docker.ContainerEvent) {
 }
 
 // handleContainerStart processes container start events
-func (s *service) handleContainerStart(containerID string) error {
+func (s *service) handleContainerStart(ctx context.Context, containerID string) error {
 	s.log.WithField("container_id", containerID).Debug("Handling container start")
 
 	// Check if we have configuration for this container
-	containerConfig, exists := s.findContainerConfig(containerID)
+	containerConfig, exists := s.findContainerConfig(ctx, containerID)
 	if !exists {
 		s.log.WithField("container_id", containerID).Debug("No configuration found for container")
 		return nil
 	}
 
 	// Process the container with its configuration
-	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	return s.processContainer(ctx, containerConfig)
+	return s.processContainer(ctxWithTimeout, containerConfig)
 }
 
 // handleContainerStop processes container stop events
-func (s *service) handleContainerStop(containerID string) error {
+func (s *service) handleContainerStop(ctx context.Context, containerID string) error {
 	s.log.WithField("container_id", containerID).Debug("Handling container stop")
 
 	// Get container state
@@ -240,7 +241,7 @@ func (s *service) handleContainerStop(containerID string) error {
 
 	// Remove network limits if they exist
 	if containerState.NetworkNS != "" {
-		if err := s.controller.RemoveContainerLimits(containerID, containerState.NetworkNS); err != nil {
+		if err := s.controller.RemoveContainerLimits(ctx, containerID, containerState.NetworkNS); err != nil {
 			// Check if it's a "namespace does not exist" error - this is expected when containers are removed
 			if strings.Contains(err.Error(), "does not exist") || strings.Contains(err.Error(), "no such file or directory") {
 				s.log.WithFields(logrus.Fields{
@@ -267,23 +268,21 @@ func (s *service) handleContainerStop(containerID string) error {
 }
 
 // applyConfiguration applies initial configuration to existing containers
-func (s *service) applyConfiguration() error {
+func (s *service) applyConfiguration(ctx context.Context) error {
 	s.log.Info("Applying initial configuration to existing containers")
 
-	ctx, cancel := context.WithTimeout(s.ctx, 60*time.Second)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	// Reconcile configuration with running containers
-	if err := s.reconcileContainers(ctx); err != nil {
-		return fmt.Errorf("failed to reconcile containers: %w", err)
-	}
+	s.reconcileContainers(ctxWithTimeout)
 
 	s.log.Info("Initial configuration applied successfully")
 	return nil
 }
 
 // reconcileContainers syncs state with running containers
-func (s *service) reconcileContainers(ctx context.Context) error {
+func (s *service) reconcileContainers(ctx context.Context) {
 	s.log.Debug("Reconciling container configuration with running containers")
 
 	// Track active container IDs to identify stale entries
@@ -312,12 +311,9 @@ func (s *service) reconcileContainers(ctx context.Context) error {
 	}
 
 	// Remove stale containers from state
-	if err := s.removeStaleContainers(activeIDs); err != nil {
-		return fmt.Errorf("failed to remove stale containers: %w", err)
-	}
+	s.removeStaleContainers(ctx, activeIDs)
 
 	s.log.WithField("active_containers", len(activeIDs)).Debug("Container reconciliation completed")
-	return nil
 }
 
 // processContainer processes individual container configuration
@@ -332,7 +328,7 @@ func (s *service) processContainer(ctx context.Context, cfg config.ContainerConf
 	// Find the container
 	container, err := s.inspector.GetContainerByIdentifier(ctx, identifier)
 	if err != nil {
-		if err == types.ErrContainerNotFound {
+		if errors.Is(err, types.ErrContainerNotFound) {
 			s.log.WithFields(logrus.Fields{
 				"identifier_type":  identifier.Type,
 				"identifier_value": identifier.Value,
@@ -358,13 +354,13 @@ func (s *service) processContainer(ctx context.Context, cfg config.ContainerConf
 	_, exists := s.state.GetContainerState(container.ID)
 	if exists {
 		// Update existing limits if different
-		if err := s.controller.UpdateContainerLimits(container.ID, nsPath, limits); err != nil {
+		if err := s.controller.UpdateContainerLimits(ctx, container.ID, nsPath, limits); err != nil {
 			return fmt.Errorf("failed to update container limits: %w", err)
 		}
 		s.log.WithField("container_id", container.ID).Info("Container limits updated")
 	} else {
 		// Apply new limits
-		if err := s.controller.ApplyContainerLimits(container.ID, nsPath, limits); err != nil {
+		if err := s.controller.ApplyContainerLimits(ctx, container.ID, nsPath, limits); err != nil {
 			return fmt.Errorf("failed to apply container limits: %w", err)
 		}
 		s.log.WithField("container_id", container.ID).Info("Container limits applied")
@@ -386,7 +382,7 @@ func (s *service) processContainer(ctx context.Context, cfg config.ContainerConf
 }
 
 // removeStaleContainers cleans up containers not in current configuration
-func (s *service) removeStaleContainers(activeIDs map[string]bool) error {
+func (s *service) removeStaleContainers(ctx context.Context, activeIDs map[string]bool) {
 	allStates := s.state.GetAllStates()
 
 	for containerID, containerState := range allStates {
@@ -395,7 +391,7 @@ func (s *service) removeStaleContainers(activeIDs map[string]bool) error {
 
 			// Remove network limits
 			if containerState.NetworkNS != "" {
-				if err := s.controller.RemoveContainerLimits(containerID, containerState.NetworkNS); err != nil {
+				if err := s.controller.RemoveContainerLimits(ctx, containerID, containerState.NetworkNS); err != nil {
 					s.log.WithFields(logrus.Fields{
 						"container_id": containerID,
 						"error":        err,
@@ -412,8 +408,6 @@ func (s *service) removeStaleContainers(activeIDs map[string]bool) error {
 			}
 		}
 	}
-
-	return nil
 }
 
 // watchEvents is the main event processing loop
@@ -434,58 +428,69 @@ func (s *service) watchEvents(ctx context.Context) {
 				s.log.Debug("Event channel closed, stopping event processing loop")
 				return
 			}
-			s.handleContainerEvent(event)
+			s.handleContainerEvent(ctx, event)
 		}
 	}
 }
 
 // findContainerConfig finds configuration for a container by ID
-func (s *service) findContainerConfig(containerID string) (config.ContainerConfig, bool) {
-	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
-	defer cancel()
-
-	// Get container details
-	containers, err := s.inspector.ListContainers(ctx)
-	if err != nil {
-		s.log.WithError(err).Warn("Failed to list containers while finding config")
-		return config.ContainerConfig{}, false
-	}
-
-	var targetContainer *types.Container
-	for _, container := range containers {
-		if container.ID == containerID {
-			targetContainer = &container
-			break
-		}
-	}
-
+func (s *service) findContainerConfig(ctx context.Context, containerID string) (config.ContainerConfig, bool) {
+	targetContainer := s.getContainerByID(ctx, containerID)
 	if targetContainer == nil {
 		return config.ContainerConfig{}, false
 	}
 
-	// Check each configured container to see if it matches
-	for _, containerConfig := range s.config.DockerContainers {
-		identifier := containerConfig.GetIdentifier()
+	return s.findMatchingConfig(*targetContainer)
+}
 
-		switch identifier.Type {
-		case types.IdentifierTypeName:
-			if name, ok := identifier.Value.(string); ok && targetContainer.Name == name {
-				return containerConfig, true
-			}
-		case types.IdentifierTypeID:
-			if id, ok := identifier.Value.(string); ok && targetContainer.ID == id {
-				return containerConfig, true
-			}
-		case types.IdentifierTypeLabels:
-			if targetLabels, ok := identifier.Value.(map[string]string); ok {
-				if s.matchesLabels(targetContainer.Labels, targetLabels) {
-					return containerConfig, true
-				}
-			}
+func (s *service) getContainerByID(ctx context.Context, containerID string) *types.Container {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	containers, err := s.inspector.ListContainers(ctxWithTimeout)
+	if err != nil {
+		s.log.WithError(err).Warn("Failed to list containers while finding config")
+		return nil
+	}
+
+	for _, container := range containers {
+		if container.ID == containerID {
+			return &container
+		}
+	}
+
+	return nil
+}
+
+func (s *service) findMatchingConfig(targetContainer types.Container) (config.ContainerConfig, bool) {
+	for _, containerConfig := range s.config.DockerContainers {
+		if s.configMatchesContainer(containerConfig, targetContainer) {
+			return containerConfig, true
 		}
 	}
 
 	return config.ContainerConfig{}, false
+}
+
+func (s *service) configMatchesContainer(containerConfig config.ContainerConfig, targetContainer types.Container) bool {
+	identifier := containerConfig.GetIdentifier()
+
+	switch identifier.Type {
+	case types.IdentifierTypeName:
+		if name, ok := identifier.Value.(string); ok {
+			return targetContainer.Name == name
+		}
+	case types.IdentifierTypeID:
+		if id, ok := identifier.Value.(string); ok {
+			return targetContainer.ID == id
+		}
+	case types.IdentifierTypeLabels:
+		if targetLabels, ok := identifier.Value.(map[string]string); ok {
+			return s.matchesLabels(targetContainer.Labels, targetLabels)
+		}
+	}
+
+	return false
 }
 
 // matchesLabels checks if container labels match all target labels
@@ -513,7 +518,7 @@ func (s *service) cleanup() error {
 
 	for containerID, containerState := range allStates {
 		if containerState.NetworkNS != "" {
-			if err := s.controller.RemoveContainerLimits(containerID, containerState.NetworkNS); err != nil {
+			if err := s.controller.RemoveContainerLimits(context.Background(), containerID, containerState.NetworkNS); err != nil {
 				s.log.WithFields(logrus.Fields{
 					"container_id": containerID,
 					"network_ns":   containerState.NetworkNS,

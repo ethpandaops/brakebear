@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -79,10 +80,10 @@ func (m *manager) Stop() error {
 // SetContainerState stores or updates the state for a container
 func (m *manager) SetContainerState(containerID string, state *types.ContainerState) error {
 	if containerID == "" {
-		return fmt.Errorf("container ID cannot be empty")
+		return errors.New("container ID cannot be empty")
 	}
 	if state == nil {
-		return fmt.Errorf("container state cannot be nil")
+		return errors.New("container state cannot be nil")
 	}
 
 	m.mu.Lock()
@@ -134,7 +135,7 @@ func (m *manager) GetContainerState(containerID string) (*types.ContainerState, 
 // RemoveContainerState removes the state for a container
 func (m *manager) RemoveContainerState(containerID string) error {
 	if containerID == "" {
-		return fmt.Errorf("container ID cannot be empty")
+		return errors.New("container ID cannot be empty")
 	}
 
 	m.mu.Lock()
@@ -186,10 +187,10 @@ func (m *manager) HasContainer(containerID string) bool {
 // UpdateNetworkNamespace updates the network namespace path for a container
 func (m *manager) UpdateNetworkNamespace(containerID string, nsPath string) error {
 	if containerID == "" {
-		return fmt.Errorf("container ID cannot be empty")
+		return errors.New("container ID cannot be empty")
 	}
 	if nsPath == "" {
-		return fmt.Errorf("network namespace path cannot be empty")
+		return errors.New("network namespace path cannot be empty")
 	}
 
 	m.mu.Lock()

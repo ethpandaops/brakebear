@@ -2,6 +2,8 @@ package docker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -139,28 +141,26 @@ func (m *Monitor) startEventStream(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			m.log.Debug("Context cancelled during event stream")
-			return ctx.Err()
+			return fmt.Errorf("event stream cancelled: %w", ctx.Err())
 		case <-m.done:
 			m.log.Debug("Stop signal received during event stream")
 			return nil
 		case err := <-errsCh:
-			if err != nil && err != io.EOF {
+			if err != nil && !errors.Is(err, io.EOF) {
 				return err
 			}
 			m.log.Debug("Event stream ended")
 			return nil
 		case event := <-eventsCh:
-			if err := m.processEvent(event); err != nil {
-				m.log.WithError(err).Warn("Failed to process Docker event")
-			}
+			m.processEvent(event)
 		}
 	}
 }
 
 // processEvent processes a single Docker event and sends it to the event channel
-func (m *Monitor) processEvent(event events.Message) error {
+func (m *Monitor) processEvent(event events.Message) {
 	if event.Type != events.ContainerEventType {
-		return nil // Ignore non-container events
+		return // Ignore non-container events
 	}
 
 	m.log.WithFields(logrus.Fields{
@@ -191,6 +191,4 @@ func (m *Monitor) processEvent(event events.Message) error {
 	case <-m.done:
 		m.log.Debug("Monitor stopping, discarding event")
 	}
-
-	return nil
 }
