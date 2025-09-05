@@ -1,4 +1,4 @@
-module github.com/ethpandaops/breakbear
+module github.com/ethpandaops/brakebear
 
 go 1.23.5
 

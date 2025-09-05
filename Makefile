@@ -1,9 +1,9 @@
-# BreakBear Makefile
+# BrakeBear Makefile
 # Docker container network bandwidth limiter
 
 # Variables
-BINARY_NAME=breakbear
-BINARY_PATH=cmd/breakbear/main.go
+BINARY_NAME=brakebear
+BINARY_PATH=cmd/brakebear/main.go
 BUILD_DIR=build
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT?=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -15,7 +15,7 @@ GO_BUILD_FLAGS=-trimpath $(LDFLAGS)
 
 # PHONY targets
 .PHONY: all build clean test lint fmt vet check install uninstall
-.PHONY: test-build-image test-up test-down test-up-all test-down-all test-cleanup test-script test-run-breakbear docker-test
+.PHONY: test-build-image test-up test-down test-up-all test-down-all test-cleanup test-script test-run-brakebear docker-test
 .PHONY: orbstack-dev orbstack-dev-clean
 .PHONY: help
 
@@ -111,7 +111,7 @@ TEST_DIR = tests/$(TEST)
 # Build test container image
 test-build-image:
 	@echo "Building test container image with speedtest-cli..."
-	@cd tests && docker build -t breakbear-test:latest .
+	@cd tests && docker build -t brakebear-test:latest .
 
 # Start specific test scenario
 test-up:
@@ -154,8 +154,8 @@ test-down-all:
 # Clean up test environment
 test-cleanup: test-down-all
 	@echo "Cleaning up test environment..."
-	@docker network rm breakbear-test 2>/dev/null || true
-	@docker rmi breakbear-test:latest 2>/dev/null || true
+	@docker network rm brakebear-test 2>/dev/null || true
+	@docker rmi brakebear-test:latest 2>/dev/null || true
 
 # Run test script for specific test scenario
 test-script:
@@ -170,16 +170,16 @@ test-script:
 	@echo "Running test script for scenario: $(TEST)"
 	@cd $(TEST_DIR) && ./test.sh
 
-# Run BreakBear with specific test configuration
-test-run-breakbear: build-dev
-	@if [ ! -f "$(TEST_DIR)/breakbear.yaml" ]; then \
+# Run BrakeBear with specific test configuration
+test-run-brakebear: build-dev
+	@if [ ! -f "$(TEST_DIR)/brakebear.yaml" ]; then \
 		echo "Config not found for test: $(TEST)"; \
 		exit 1; \
 	fi
-	@echo "Running BreakBear with test scenario: $(TEST)"
+	@echo "Running BrakeBear with test scenario: $(TEST)"
 	@echo "Note: This requires root privileges for network operations"
 	@echo "Press Ctrl+C to stop"
-	sudo ./$(BINARY_NAME) run --config $(TEST_DIR)/breakbear.yaml
+	sudo ./$(BINARY_NAME) run --config $(TEST_DIR)/brakebear.yaml
 
 
 # Docker test (requires Docker to be running)
@@ -197,7 +197,7 @@ orbstack-dev-clean:
 
 # Show help
 help:
-	@echo "BreakBear Makefile Help"
+	@echo "BrakeBear Makefile Help"
 	@echo ""
 	@echo "Build Targets:"
 	@echo "  build        Build the application (optimized)"
@@ -226,7 +226,7 @@ help:
 	@echo "  test-up-all      Start all test scenarios"
 	@echo "  test-down-all    Stop all test scenarios"
 	@echo "  test-cleanup     Clean up all test containers and images"
-	@echo "  test-run-breakbear Run BreakBear with test config (TEST=scenario)"
+	@echo "  test-run-brakebear Run BrakeBear with test config (TEST=scenario)"
 	@echo "  test-script         Run test script for scenario (TEST=scenario)"
 	@echo "  docker-test      Test Docker connectivity"
 	@echo ""
@@ -234,7 +234,7 @@ help:
 	@echo "  make test-up TEST=bandwidth-limit   # Start bandwidth limit test"
 	@echo "  make test-up TEST=combined          # Start combined test (default)"
 	@echo "  make test-script TEST=bandwidth-limit      # Run bandwidth limit test script"
-	@echo "  make test-run-breakbear TEST=high-latency # Run BreakBear with latency config"
+	@echo "  make test-run-brakebear TEST=high-latency # Run BrakeBear with latency config"
 	@echo ""
 	@echo "Development:"
 	@echo "  orbstack-dev      Create OrbStack development VM"

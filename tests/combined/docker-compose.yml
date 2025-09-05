@@ -3,10 +3,10 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: breakbear-test:latest
+    image: brakebear-test:latest
     container_name: combined-limited
     networks:
-      - breakbear-test
+      - brakebear-test
     labels:
       - "test-type=combined"
       - "environment=production"
@@ -16,16 +16,16 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: breakbear-test:latest
+    image: brakebear-test:latest
     container_name: combined-control
     networks:
-      - breakbear-test
+      - brakebear-test
     labels:
       - "test-type=combined-control"
       - "environment=test"
     restart: unless-stopped
 
 networks:
-  breakbear-test:
+  brakebear-test:
     driver: bridge
-    name: breakbear-test
+    name: brakebear-test

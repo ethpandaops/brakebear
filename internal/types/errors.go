@@ -2,7 +2,7 @@ package types
 
 import "errors"
 
-// Core BreakBear errors for common failure scenarios
+// Core BrakeBear errors for common failure scenarios
 var (
 	// ErrContainerNotFound is returned when a specified container cannot be found
 	ErrContainerNotFound = errors.New("container not found")

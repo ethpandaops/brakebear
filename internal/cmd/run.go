@@ -10,29 +10,29 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
-	"github.com/ethpandaops/breakbear/internal/config"
-	"github.com/ethpandaops/breakbear/internal/service"
+	"github.com/ethpandaops/brakebear/internal/config"
+	"github.com/ethpandaops/brakebear/internal/service"
 )
 
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Run BreakBear daemon",
-	Long:  `Start BreakBear daemon to monitor Docker containers and apply network limits.`,
-	RunE:  runBreakBear,
+	Short: "Run BrakeBear daemon",
+	Long:  `Start BrakeBear daemon to monitor Docker containers and apply network limits.`,
+	RunE:  runBrakeBear,
 }
 
 func init() {
 	rootCmd.AddCommand(runCmd)
 }
 
-// runBreakBear is the main daemon logic
-func runBreakBear(cmd *cobra.Command, args []string) error {
-	logrus.Info("Starting BreakBear daemon")
+// runBrakeBear is the main daemon logic
+func runBrakeBear(cmd *cobra.Command, args []string) error {
+	logrus.Info("Starting BrakeBear daemon")
 
 	// Determine config file path
 	configPath := cfgFile
 	if configPath == "" {
-		configPath = "breakbear.yaml"
+		configPath = "brakebear.yaml"
 	}
 
 	// Load configuration
@@ -53,30 +53,30 @@ func runBreakBear(cmd *cobra.Command, args []string) error {
 	// Handle signals for graceful shutdown
 	go handleSignals(cancel)
 
-	// Create and start the BreakBear service
-	breakbearService := service.NewService(cfg, logrus.WithField("package", "service"))
-	if breakbearService == nil {
-		return fmt.Errorf("failed to create BreakBear service")
+	// Create and start the BrakeBear service
+	brakebearService := service.NewService(cfg, logrus.WithField("package", "service"))
+	if brakebearService == nil {
+		return fmt.Errorf("failed to create BrakeBear service")
 	}
 
-	logrus.Info("BreakBear daemon started successfully")
+	logrus.Info("BrakeBear daemon started successfully")
 
 	// Start the service
-	if err := breakbearService.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start BreakBear service: %w", err)
+	if err := brakebearService.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start BrakeBear service: %w", err)
 	}
 
 	// Block until context is cancelled (shutdown signal received)
 	<-ctx.Done()
-	logrus.Info("Shutdown signal received, stopping BreakBear daemon")
+	logrus.Info("Shutdown signal received, stopping BrakeBear daemon")
 
 	// Gracefully stop the service
-	if err := breakbearService.Stop(); err != nil {
+	if err := brakebearService.Stop(); err != nil {
 		logrus.WithError(err).Error("Error during service shutdown")
 		return err
 	}
 
-	logrus.Info("BreakBear daemon stopped gracefully")
+	logrus.Info("BrakeBear daemon stopped gracefully")
 	return nil
 }
 

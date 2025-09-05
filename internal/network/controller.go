@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ethpandaops/breakbear/internal/types"
+	"github.com/ethpandaops/brakebear/internal/types"
 	"github.com/sirupsen/logrus"
 )
 

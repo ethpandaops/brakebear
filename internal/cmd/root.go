@@ -10,9 +10,9 @@ var (
 	cfgFile  string
 	logLevel string
 	rootCmd  = &cobra.Command{
-		Use:   "breakbear",
+		Use:   "brakebear",
 		Short: "Docker container network bandwidth limiter",
-		Long:  `BreakBear applies network bandwidth limits, latency, jitter, and packet loss to Docker containers using netns and tc.`,
+		Long:  `BrakeBear applies network bandwidth limits, latency, jitter, and packet loss to Docker containers using netns and tc.`,
 	}
 )
 
@@ -26,7 +26,7 @@ func init() {
 	cobra.OnInitialize(initConfig)
 
 	// Global flags
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is breakbear.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is brakebear.yaml)")
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 
 	// Setup logging
@@ -39,10 +39,10 @@ func initConfig() {
 		// Use config file from the flag.
 		viper.SetConfigFile(cfgFile)
 	} else {
-		// Search config in current directory with name "breakbear" (without extension).
+		// Search config in current directory with name "brakebear" (without extension).
 		viper.AddConfigPath(".")
 		viper.SetConfigType("yaml")
-		viper.SetConfigName("breakbear")
+		viper.SetConfigName("brakebear")
 	}
 
 	viper.AutomaticEnv() // read in environment variables that match
@@ -77,7 +77,7 @@ func setupLogging() {
 	logrus.WithFields(logrus.Fields{
 		"level":  level.String(),
 		"config": getConfigFile(),
-	}).Info("BreakBear starting up")
+	}).Info("BrakeBear starting up")
 }
 
 // getConfigFile returns the config file being used or default
@@ -88,5 +88,5 @@ func getConfigFile() string {
 	if viper.ConfigFileUsed() != "" {
 		return viper.ConfigFileUsed()
 	}
-	return "breakbear.yaml (default)"
+	return "brakebear.yaml (default)"
 }

@@ -1,6 +1,6 @@
 # Build artifacts
 build/
-/breakbear
+/brakebear
 *.exe
 
 # Test artifacts

@@ -8,7 +8,7 @@ import (
 
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/ethpandaops/breakbear/internal/types"
+	"github.com/ethpandaops/brakebear/internal/types"
 	"github.com/sirupsen/logrus"
 )
 

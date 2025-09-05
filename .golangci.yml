@@ -1,4 +1,4 @@
-# golangci-lint configuration for BreakBear
+# golangci-lint configuration for BrakeBear
 version: 2
 
 run:

@@ -7,15 +7,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethpandaops/breakbear/internal/config"
-	"github.com/ethpandaops/breakbear/internal/docker"
-	"github.com/ethpandaops/breakbear/internal/network"
-	"github.com/ethpandaops/breakbear/internal/state"
-	"github.com/ethpandaops/breakbear/internal/types"
+	"github.com/ethpandaops/brakebear/internal/config"
+	"github.com/ethpandaops/brakebear/internal/docker"
+	"github.com/ethpandaops/brakebear/internal/network"
+	"github.com/ethpandaops/brakebear/internal/state"
+	"github.com/ethpandaops/brakebear/internal/types"
 	"github.com/sirupsen/logrus"
 )
 
-// Service defines the interface for the main BreakBear service
+// Service defines the interface for the main BrakeBear service
 type Service interface {
 	// Start initializes and starts all components and event processing
 	Start(ctx context.Context) error
@@ -23,7 +23,7 @@ type Service interface {
 	Stop() error
 }
 
-// service implements the Service interface and orchestrates all BreakBear components
+// service implements the Service interface and orchestrates all BrakeBear components
 type service struct {
 	config     *config.Config
 	docker     *docker.Client
@@ -37,7 +37,7 @@ type service struct {
 	wg         sync.WaitGroup
 }
 
-// NewService creates a new BreakBear service with all required components
+// NewService creates a new BrakeBear service with all required components
 func NewService(cfg *config.Config, log logrus.FieldLogger) Service {
 	if log == nil {
 		log = logrus.New()
@@ -61,7 +61,7 @@ func NewService(cfg *config.Config, log logrus.FieldLogger) Service {
 
 // Start initializes and starts all components and event processing
 func (s *service) Start(ctx context.Context) error {
-	s.log.Info("Starting BreakBear service")
+	s.log.Info("Starting BrakeBear service")
 
 	// Create cancellable context for service lifecycle
 	s.ctx, s.cancel = context.WithCancel(ctx)
@@ -107,13 +107,13 @@ func (s *service) Start(ctx context.Context) error {
 	s.wg.Add(1)
 	go s.watchEvents(s.ctx)
 
-	s.log.Info("BreakBear service started successfully")
+	s.log.Info("BrakeBear service started successfully")
 	return nil
 }
 
 // Stop gracefully shuts down all components
 func (s *service) Stop() error {
-	s.log.Info("Stopping BreakBear service")
+	s.log.Info("Stopping BrakeBear service")
 
 	// Cancel context to signal all goroutines to stop
 	if s.cancel != nil {
@@ -164,7 +164,7 @@ func (s *service) Stop() error {
 		return stopErrors[0] // Return first error
 	}
 
-	s.log.Info("BreakBear service stopped successfully")
+	s.log.Info("BrakeBear service stopped successfully")
 	return nil
 }
 

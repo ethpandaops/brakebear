@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ethpandaops/breakbear/internal/types"
+	"github.com/ethpandaops/brakebear/internal/types"
 )
 
 // ValidateContainerConfig validates a single container configuration

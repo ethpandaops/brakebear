@@ -1,4 +1,4 @@
-# Example configuration for BreakBear
+# Example configuration for BrakeBear
 log_level: "info"
 
 docker_containers:

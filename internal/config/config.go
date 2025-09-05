@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ethpandaops/breakbear/internal/types"
+	"github.com/ethpandaops/brakebear/internal/types"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 )
 
-// Config represents the main configuration structure for BreakBear
+// Config represents the main configuration structure for BrakeBear
 type Config struct {
 	// LogLevel specifies the logging level (debug, info, warn, error)
 	LogLevel string `mapstructure:"log_level"`

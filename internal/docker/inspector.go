@@ -8,7 +8,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
-	breakbeartypes "github.com/ethpandaops/breakbear/internal/types"
+	brakebeartypes "github.com/ethpandaops/brakebear/internal/types"
 	"github.com/sirupsen/logrus"
 )
 
@@ -31,7 +31,7 @@ func NewInspector(client *Client, log logrus.FieldLogger) *Inspector {
 }
 
 // GetContainerByIdentifier finds a container by name, ID, or labels
-func (i *Inspector) GetContainerByIdentifier(ctx context.Context, id breakbeartypes.ContainerIdentifier) (*breakbeartypes.Container, error) {
+func (i *Inspector) GetContainerByIdentifier(ctx context.Context, id brakebeartypes.ContainerIdentifier) (*brakebeartypes.Container, error) {
 	i.log.WithFields(logrus.Fields{
 		"identifier_type":  id.Type,
 		"identifier_value": id.Value,
@@ -43,21 +43,21 @@ func (i *Inspector) GetContainerByIdentifier(ctx context.Context, id breakbearty
 	}
 
 	switch id.Type {
-	case breakbeartypes.IdentifierTypeName:
+	case brakebeartypes.IdentifierTypeName:
 		name, ok := id.Value.(string)
 		if !ok {
 			return nil, fmt.Errorf("invalid name identifier: expected string, got %T", id.Value)
 		}
 		return i.findByName(containers, name)
 
-	case breakbeartypes.IdentifierTypeID:
+	case brakebeartypes.IdentifierTypeID:
 		containerID, ok := id.Value.(string)
 		if !ok {
 			return nil, fmt.Errorf("invalid ID identifier: expected string, got %T", id.Value)
 		}
 		return i.findByID(containers, containerID)
 
-	case breakbeartypes.IdentifierTypeLabels:
+	case brakebeartypes.IdentifierTypeLabels:
 		labels, ok := id.Value.(map[string]string)
 		if !ok {
 			return nil, fmt.Errorf("invalid labels identifier: expected map[string]string, got %T", id.Value)
@@ -98,7 +98,7 @@ func (i *Inspector) GetContainerNetworkNamespace(ctx context.Context, containerI
 }
 
 // ListContainers returns a list of all running containers
-func (i *Inspector) ListContainers(ctx context.Context) ([]breakbeartypes.Container, error) {
+func (i *Inspector) ListContainers(ctx context.Context) ([]brakebeartypes.Container, error) {
 	i.log.Debug("Listing all running containers")
 
 	cli := i.client.GetClient()
@@ -114,10 +114,10 @@ func (i *Inspector) ListContainers(ctx context.Context) ([]breakbeartypes.Contai
 		return nil, fmt.Errorf("failed to list Docker containers: %w", err)
 	}
 
-	containers := make([]breakbeartypes.Container, 0, len(dockerContainers))
+	containers := make([]brakebeartypes.Container, 0, len(dockerContainers))
 	for _, dockerContainer := range dockerContainers {
 		// Convert Docker container to our internal type
-		bbContainer := breakbeartypes.Container{
+		bbContainer := brakebeartypes.Container{
 			ID:     dockerContainer.ID,
 			Name:   strings.TrimPrefix(dockerContainer.Names[0], "/"), // Remove leading slash
 			Labels: dockerContainer.Labels,
@@ -133,7 +133,7 @@ func (i *Inspector) ListContainers(ctx context.Context) ([]breakbeartypes.Contai
 }
 
 // findByName finds a container by name (supports prefix matching)
-func (i *Inspector) findByName(containers []breakbeartypes.Container, name string) (*breakbeartypes.Container, error) {
+func (i *Inspector) findByName(containers []brakebeartypes.Container, name string) (*brakebeartypes.Container, error) {
 	i.log.WithField("name", name).Debug("Searching for container by name")
 
 	for _, container := range containers {
@@ -156,11 +156,11 @@ func (i *Inspector) findByName(containers []breakbeartypes.Container, name strin
 		}
 	}
 
-	return nil, fmt.Errorf("%w: no container found with name %s", breakbeartypes.ErrContainerNotFound, name)
+	return nil, fmt.Errorf("%w: no container found with name %s", brakebeartypes.ErrContainerNotFound, name)
 }
 
 // findByID finds a container by ID (supports prefix matching)
-func (i *Inspector) findByID(containers []breakbeartypes.Container, id string) (*breakbeartypes.Container, error) {
+func (i *Inspector) findByID(containers []brakebeartypes.Container, id string) (*brakebeartypes.Container, error) {
 	i.log.WithField("id", id).Debug("Searching for container by ID")
 
 	for _, container := range containers {
@@ -183,11 +183,11 @@ func (i *Inspector) findByID(containers []breakbeartypes.Container, id string) (
 		}
 	}
 
-	return nil, fmt.Errorf("%w: no container found with ID %s", breakbeartypes.ErrContainerNotFound, id)
+	return nil, fmt.Errorf("%w: no container found with ID %s", brakebeartypes.ErrContainerNotFound, id)
 }
 
 // findByLabels finds a container by matching labels
-func (i *Inspector) findByLabels(containers []breakbeartypes.Container, targetLabels map[string]string) (*breakbeartypes.Container, error) {
+func (i *Inspector) findByLabels(containers []brakebeartypes.Container, targetLabels map[string]string) (*brakebeartypes.Container, error) {
 	i.log.WithField("labels", targetLabels).Debug("Searching for container by labels")
 
 	for _, container := range containers {
@@ -201,7 +201,7 @@ func (i *Inspector) findByLabels(containers []breakbeartypes.Container, targetLa
 		}
 	}
 
-	return nil, fmt.Errorf("%w: no container found with labels %v", breakbeartypes.ErrContainerNotFound, targetLabels)
+	return nil, fmt.Errorf("%w: no container found with labels %v", brakebeartypes.ErrContainerNotFound, targetLabels)
 }
 
 // matchesLabels checks if container labels match all target labels

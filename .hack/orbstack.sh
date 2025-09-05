@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VM_NAME="breakbear"
+VM_NAME="brakebear"
 OS_IMAGE="ubuntu:24.10"
 
 cleanup() {
@@ -30,9 +30,9 @@ else
     echo "Creating OrbStack VM ..."
     orbctl create "$OS_IMAGE" "$VM_NAME" -c .hack/cloud-init.yaml
     # Add user to docker group
-    ssh breakbear@orb "sudo usermod -aG docker $USER"
+    ssh brakebear@orb "sudo usermod -aG docker $USER"
     # Change user default directory to $PWD
-    ssh breakbear@orb "echo \"cd $PWD\" >> ~/.bashrc"
+    ssh brakebear@orb "echo \"cd $PWD\" >> ~/.bashrc"
     echo "VM '$VM_NAME' created successfully!"
 
 fi

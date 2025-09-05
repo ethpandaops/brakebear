@@ -8,7 +8,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
-	"github.com/ethpandaops/breakbear/internal/types"
+	"github.com/ethpandaops/brakebear/internal/types"
 )
 
 // TCManager manages traffic control operations using tc commands

@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/ethpandaops/breakbear/internal/cmd"
+	"github.com/ethpandaops/brakebear/internal/cmd"
 	"github.com/sirupsen/logrus"
 )
 
