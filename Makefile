@@ -15,7 +15,7 @@ GO_BUILD_FLAGS=-trimpath $(LDFLAGS)
 
 # PHONY targets
 .PHONY: all build clean test lint fmt vet check install uninstall
-.PHONY: test-build-image test-up test-down test-up-all test-down-all test-cleanup test-script test-run-brakebear docker-test
+.PHONY: test-build-image test-up test-down test-up-all test-down-all test-cleanup test-script test-run-brakebear test-integration docker-test
 .PHONY: orbstack-dev orbstack-dev-clean
 .PHONY: help
 
@@ -181,6 +181,31 @@ test-run-brakebear: build-dev
 	@echo "Press Ctrl+C to stop"
 	sudo ./$(BINARY_NAME) run --config $(TEST_DIR)/brakebear.yaml
 
+# Run full integration test suite
+test-integration: test-build-image build-dev
+	@echo "Running integration tests..."
+	@set -e; \
+	make test-up TEST=combined; \
+	echo "Starting BrakeBear in background..."; \
+	sudo ./$(BINARY_NAME) run --config tests/combined/brakebear.yaml & \
+	BRAKEBEAR_PID=$$!; \
+	echo "BrakeBear PID: $$BRAKEBEAR_PID"; \
+	sleep 5; \
+	echo "Running test script..."; \
+	if make test-script TEST=combined; then \
+		echo "Integration tests passed"; \
+		RESULT=0; \
+	else \
+		echo "Integration tests failed"; \
+		RESULT=1; \
+	fi; \
+	echo "Cleaning up BrakeBear process..."; \
+	kill $$BRAKEBEAR_PID 2>/dev/null || true; \
+	sleep 2; \
+	echo "Cleaning up test containers..."; \
+	make test-down-all; \
+	exit $$RESULT
+
 
 # Docker test (requires Docker to be running)
 docker-test:
@@ -221,6 +246,7 @@ help:
 	@echo ""
 	@echo "Testing:"
 	@echo "  test-build-image Build test container image with tools"
+	@echo "  test-integration Run full integration test suite"
 	@echo "  test-up          Start test scenario (TEST=bandwidth-limit|high-latency|packet-loss|combined|unlimited)"
 	@echo "  test-down        Stop test scenario"
 	@echo "  test-up-all      Start all test scenarios"
