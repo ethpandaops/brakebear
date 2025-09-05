@@ -1,0 +1,24 @@
+# Example configuration for BreakBear
+log_level: "info"
+
+docker_containers:
+# Example container configuration with container name
+- name: "test-limited"
+  download_rate: 1Mbps
+  upload_rate: 500kbps
+  latency: 50ms
+  jitter: 10ms
+  loss: 0.1%
+
+# Example container configuration with labels
+- labels:
+    environment: "production"
+  download_rate: 10Mbps
+  upload_rate: 5Mbps
+  latency: 100ms
+
+# Example container configuration with container name
+- name: "test-high-latency"
+  latency: 500ms
+  jitter: 50ms
+  loss: 1%
