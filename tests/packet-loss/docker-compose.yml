@@ -1,0 +1,31 @@
+services:
+  loss-high:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: breakbear-test:latest
+    container_name: loss-high
+    networks:
+      - breakbear-test
+    labels:
+      - "test-type=packet-loss"
+      - "environment=test"
+    restart: unless-stopped
+
+  loss-none:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: breakbear-test:latest
+    container_name: loss-none
+    networks:
+      - breakbear-test
+    labels:
+      - "test-type=loss-control"
+      - "environment=test"
+    restart: unless-stopped
+
+networks:
+  breakbear-test:
+    driver: bridge
+    name: breakbear-test

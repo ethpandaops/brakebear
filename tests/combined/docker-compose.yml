@@ -1,0 +1,31 @@
+services:
+  combined-limited:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: breakbear-test:latest
+    container_name: combined-limited
+    networks:
+      - breakbear-test
+    labels:
+      - "test-type=combined"
+      - "environment=production"
+    restart: unless-stopped
+
+  combined-control:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: breakbear-test:latest
+    container_name: combined-control
+    networks:
+      - breakbear-test
+    labels:
+      - "test-type=combined-control"
+      - "environment=test"
+    restart: unless-stopped
+
+networks:
+  breakbear-test:
+    driver: bridge
+    name: breakbear-test

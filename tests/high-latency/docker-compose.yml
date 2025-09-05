@@ -1,0 +1,31 @@
+services:
+  latency-high:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: breakbear-test:latest
+    container_name: latency-high
+    networks:
+      - breakbear-test
+    labels:
+      - "test-type=latency"
+      - "environment=production"
+    restart: unless-stopped
+
+  latency-normal:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: breakbear-test:latest
+    container_name: latency-normal
+    networks:
+      - breakbear-test
+    labels:
+      - "test-type=latency-control"
+      - "environment=test"
+    restart: unless-stopped
+
+networks:
+  breakbear-test:
+    driver: bridge
+    name: breakbear-test

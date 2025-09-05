@@ -1,0 +1,31 @@
+services:
+  bandwidth-limited:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: breakbear-test:latest
+    container_name: bandwidth-limited
+    networks:
+      - breakbear-test
+    labels:
+      - "test-type=bandwidth"
+      - "environment=test"
+    restart: unless-stopped
+
+  bandwidth-unlimited:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: breakbear-test:latest
+    container_name: bandwidth-unlimited
+    networks:
+      - breakbear-test
+    labels:
+      - "test-type=bandwidth-control"
+      - "environment=test"
+    restart: unless-stopped
+
+networks:
+  breakbear-test:
+    driver: bridge
+    name: breakbear-test

@@ -1,0 +1,5 @@
+log_level: "info"
+docker_containers:
+- name: "bandwidth-limited"
+  download_rate: 1Mbps
+  upload_rate: 500kbps
