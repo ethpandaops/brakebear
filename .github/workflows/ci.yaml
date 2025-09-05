@@ -1,0 +1,47 @@
+name: Check - CI
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+
+concurrency:
+  group: "go-lint-build-${{ github.head_ref || github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Set up Go
+      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+      with:
+        go-version: '1.23'
+
+    - name: Checkout code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      with:
+        fetch-depth: 0
+
+    - name: Install golangci-lint
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.3.0
+
+    - name: Run build
+      run: make build
+
+    - name: Run make test
+      run: make test
+
+    - name: Run make lint
+      run: make lint
