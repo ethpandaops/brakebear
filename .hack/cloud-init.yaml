@@ -9,6 +9,8 @@ packages:
   - gnupg
   - lsb-release
   - wget
+  - build-essential
+  - curl
 
 runcmd:
   # Install Docker
@@ -24,9 +26,18 @@ runcmd:
 
   # Install Go 1.23
   - rm -rf /usr/local/go
-  - wget -O /tmp/go1.23.1.linux-amd64.tar.gz https://golang.org/dl/go1.23.1.linux-amd64.tar.gz
-  - tar -C /usr/local -xzf /tmp/go1.23.1.linux-amd64.tar.gz
-  - rm /tmp/go1.23.1.linux-amd64.tar.gz
+  - |
+    ARCH=$(dpkg --print-architecture)
+    if [ "$ARCH" = "amd64" ]; then
+      GO_ARCH="amd64"
+    elif [ "$ARCH" = "arm64" ]; then
+      GO_ARCH="arm64"
+    else
+      GO_ARCH="amd64"  # fallback to amd64
+    fi
+    wget -O /tmp/go1.23.1.linux-${GO_ARCH}.tar.gz https://golang.org/dl/go1.23.1.linux-${GO_ARCH}.tar.gz
+    tar -C /usr/local -xzf /tmp/go1.23.1.linux-${GO_ARCH}.tar.gz
+    rm /tmp/go1.23.1.linux-${GO_ARCH}.tar.gz
 
 write_files:
   - path: /etc/profile.d/go.sh
@@ -34,4 +45,8 @@ write_files:
       export PATH=$PATH:/usr/local/go/bin
       export GOPATH=$HOME/go
       export PATH=$PATH:$GOPATH/bin
+    permissions: '0644'
+  - path: /etc/environment
+    content: |
+      PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/usr/local/go/bin"
     permissions: '0644'
