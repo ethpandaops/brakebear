@@ -48,4 +48,4 @@ jobs:
 
     - name: Run integration tests
       timeout-minutes: 10
-      run: make test-integration TEST=bandwidth-limit
+      run: make test-integration
