@@ -1,0 +1,4 @@
+log_level: "info"
+docker_containers:
+- name: "loss-high"
+  loss: 5%

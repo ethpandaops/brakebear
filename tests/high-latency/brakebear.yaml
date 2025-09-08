@@ -1,0 +1,5 @@
+log_level: "info"
+docker_containers:
+- name: "latency-high"
+  latency: 500ms
+  jitter: 50ms

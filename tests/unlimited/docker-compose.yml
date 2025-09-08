@@ -1,0 +1,31 @@
+services:
+  unlimited-1:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: brakebear-test:latest
+    container_name: unlimited-1
+    networks:
+      - brakebear-test
+    labels:
+      - "test-type=unlimited"
+      - "environment=test"
+    restart: unless-stopped
+
+  unlimited-2:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: brakebear-test:latest
+    container_name: unlimited-2
+    networks:
+      - brakebear-test
+    labels:
+      - "test-type=unlimited"
+      - "environment=test"
+    restart: unless-stopped
+
+networks:
+  brakebear-test:
+    driver: bridge
+    name: brakebear-test

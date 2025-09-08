@@ -1,0 +1,8 @@
+log_level: "info"
+docker_containers:
+- name: "combined-limited"
+  download_rate: 1Mbps
+  upload_rate: 500kbps
+  latency: 50ms
+  jitter: 10ms
+  loss: 0.1%

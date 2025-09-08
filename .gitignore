@@ -1,0 +1,33 @@
+# Build artifacts
+build/
+/brakebear
+*.exe
+
+# Test artifacts
+coverage.out
+coverage.html
+
+# Documentation
+docs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Go cache
+*.test
+*.prof
+
+# Dependencies
+vendor/
+
+# Keep test configurations but ignore any generated test files
+tests/**/logs/
+tests/**/*.log

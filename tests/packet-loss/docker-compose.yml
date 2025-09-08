@@ -1,0 +1,31 @@
+services:
+  loss-high:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: brakebear-test:latest
+    container_name: loss-high
+    networks:
+      - brakebear-test
+    labels:
+      - "test-type=packet-loss"
+      - "environment=test"
+    restart: unless-stopped
+
+  loss-none:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: brakebear-test:latest
+    container_name: loss-none
+    networks:
+      - brakebear-test
+    labels:
+      - "test-type=loss-control"
+      - "environment=test"
+    restart: unless-stopped
+
+networks:
+  brakebear-test:
+    driver: bridge
+    name: brakebear-test

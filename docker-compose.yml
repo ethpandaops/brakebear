@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  brakebear:
+    build: .
+    image: brakebear:latest
+    container_name: brakebear
+    restart: unless-stopped
+
+    # Required privileges for network operations
+    privileged: true
+
+    # Use host network to manage container networking
+    network_mode: host
+
+    # Share host PID namespace to access container processes
+    pid: host
+
+    # Mount Docker socket to manage containers
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - ./brakebear.yaml:/etc/brakebear/brakebear.yaml:ro
+
+    # Command to run the application
+    command: ["run", "--config", "/etc/brakebear/brakebear.yaml"]

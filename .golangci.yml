@@ -1,0 +1,51 @@
+version: "2"
+run:
+  go: "1.23"
+linters:
+  default: all
+  disable:
+    - depguard
+    - exhaustruct
+    - forbidigo
+    - godot
+    - ireturn
+    - mnd
+    - nlreturn
+    - revive
+    - tagliatelle
+    - testpackage
+    - varnamelen
+    - wsl
+    - wsl_v5
+    - noinlineerr
+    - err113
+  settings:
+    funlen:
+      lines: 80
+      statements: 40
+    gocyclo:
+      min-complexity: 15
+    lll:
+      line-length: 150
+    nestif:
+      min-complexity: 40
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
