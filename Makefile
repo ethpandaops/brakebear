@@ -16,6 +16,7 @@ GO_BUILD_FLAGS=-trimpath $(LDFLAGS)
 # PHONY targets
 .PHONY: all build clean test lint fmt vet check install uninstall
 .PHONY: test-build-image test-up test-down test-up-all test-down-all test-cleanup test-script test-run-brakebear test-integration docker-test
+.PHONY: docker-build docker-run docker-clean
 .PHONY: orbstack-dev orbstack-dev-clean
 .PHONY: help
 
@@ -213,6 +214,39 @@ docker-test:
 	@docker info >/dev/null 2>&1 || (echo "Docker is not running or accessible" && exit 1)
 	@echo "Docker is accessible"
 
+# Docker build and deployment targets
+DOCKER_IMAGE_NAME ?= brakebear
+DOCKER_TAG ?= $(VERSION)
+DOCKER_REGISTRY ?=
+
+# Build Docker image
+docker-build:
+	@echo "Building Docker image $(DOCKER_IMAGE_NAME):$(DOCKER_TAG)..."
+	docker build -t $(DOCKER_IMAGE_NAME):$(DOCKER_TAG) .
+	docker tag $(DOCKER_IMAGE_NAME):$(DOCKER_TAG) $(DOCKER_IMAGE_NAME):latest
+	@echo "Docker image built successfully"
+
+# Run Docker container
+docker-run:
+	@echo "Running Docker container $(DOCKER_IMAGE_NAME):$(DOCKER_TAG)..."
+	@echo "Note: This container requires --privileged and host network access"
+	@echo "Mount your config file to /etc/brakebear/brakebear.yaml"
+	docker run --rm -it \
+		--privileged \
+		--network host \
+		--pid host \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		-v $(PWD)/tests:/etc/brakebear/examples:ro \
+		--entrypoint "sh" \
+		$(DOCKER_IMAGE_NAME):$(DOCKER_TAG)
+
+# Clean up Docker images and containers
+docker-clean:
+	@echo "Cleaning up Docker images..."
+	-docker rmi $(DOCKER_IMAGE_NAME):$(DOCKER_TAG) 2>/dev/null
+	-docker rmi $(DOCKER_IMAGE_NAME):latest 2>/dev/null
+	@echo "Docker cleanup completed"
+
 # OrbStack development VM management
 orbstack-dev:
 	@./.hack/orbstack.sh
@@ -255,6 +289,11 @@ help:
 	@echo "  test-run-brakebear Run BrakeBear with test config (TEST=scenario)"
 	@echo "  test-script         Run test script for scenario (TEST=scenario)"
 	@echo "  docker-test      Test Docker connectivity"
+	@echo ""
+	@echo "Docker:"
+	@echo "  docker-build     Build Docker image"
+	@echo "  docker-run       Run Docker container (requires --privileged)"
+	@echo "  docker-clean     Clean up Docker images"
 	@echo ""
 	@echo "Test Usage Examples:"
 	@echo "  make test-up TEST=bandwidth-limit   # Start bandwidth limit test"

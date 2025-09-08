@@ -1,0 +1,31 @@
+name: Deploy - Docker
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Deploy docker images
+        uses: ./.github/actions/docker-deploy
+        with:
+          registry: ghcr.io
+          registry_username: ${{ github.actor }}
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
+          image_name: ${{ github.repository }}
+          push: true
+          platforms: linux/amd64
+          file: Dockerfile
