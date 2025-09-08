@@ -25,7 +25,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint-and-test:
+  run:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
