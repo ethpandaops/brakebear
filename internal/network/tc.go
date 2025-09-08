@@ -44,16 +44,13 @@ func (t *TCManager) ApplyLimits(ctx context.Context, ifaceName string, limits *t
 
 	var commands [][]string
 
-	// Apply different types of limits
-	if err := t.applyUploadLimits(ifaceName, limits, &commands); err != nil {
+	// Apply egress (upload) limits
+	if err := t.applyEgressLimits(ifaceName, limits, &commands); err != nil {
 		return err
 	}
 
-	if err := t.applyDownloadLimits(ifaceName, limits, &commands); err != nil {
-		return err
-	}
-
-	if err := t.applyNetemLimits(ifaceName, limits, &commands); err != nil {
+	// Apply ingress (download) limits using IFB
+	if err := t.applyIngressLimits(ifaceName, limits, &commands); err != nil {
 		return err
 	}
 
@@ -110,6 +107,161 @@ func (t *TCManager) RemoveLimits(ctx context.Context, ifaceName string) error {
 // GetInterfaces returns a list of network interfaces in the current namespace
 func (t *TCManager) GetInterfaces() ([]string, error) {
 	return t.getInterfaces()
+}
+
+// applyEgressLimits applies upload limits and latency/jitter/loss to egress traffic
+func (t *TCManager) applyEgressLimits(ifaceName string, limits *types.NetworkLimits, commands *[][]string) error {
+	// Determine the rate to use - if no upload limit, use a high default (10Gbps)
+	var rateStr string
+	hasUploadLimit := limits.UploadRate != nil && limits.UploadRate.ToBytes() > 0
+	hasNetemLimits := t.hasNetemLimits(limits)
+
+	switch {
+	case hasUploadLimit:
+		rateStr = t.rateToTcString(limits.UploadRate)
+		t.log.WithFields(logrus.Fields{
+			"interface":   ifaceName,
+			"upload_rate": rateStr,
+		}).Info("Setting up egress HTB with upload limit")
+	case hasNetemLimits:
+		// Use a high rate if we only have netem limits (10Gbps default)
+		rateStr = "10gbit"
+		t.log.WithField("interface", ifaceName).Debug("Setting up egress HTB with default high rate for netem")
+	default:
+		// No egress limits needed
+		return nil
+	}
+
+	// Create HTB root qdisc
+	*commands = append(*commands, []string{
+		"tc", "qdisc", "add", "dev", ifaceName, "root", "handle", "1:", "htb", "default", "30",
+	})
+
+	// Create HTB class with the rate
+	*commands = append(*commands, []string{
+		"tc", "class", "add", "dev", ifaceName, "parent", "1:", "classid", "1:1", "htb",
+		"rate", rateStr, "ceil", rateStr,
+	})
+
+	// Add netem as leaf qdisc if needed
+	if hasNetemLimits {
+		netemCmd := []string{"tc", "qdisc", "add", "dev", ifaceName, "parent", "1:1", "handle", "10:", "netem"}
+
+		if limits.Latency != nil {
+			latencyMs := limits.Latency.ToNanoseconds() / 1000000
+			netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
+
+			if limits.Jitter != nil {
+				jitterMs := limits.Jitter.ToNanoseconds() / 1000000
+				netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
+			}
+		}
+
+		if limits.Loss != nil {
+			netemCmd = append(netemCmd, "loss", fmt.Sprintf("%.2f%%", *limits.Loss))
+		}
+
+		*commands = append(*commands, netemCmd)
+		t.log.WithField("interface", ifaceName).Debug("Added netem for egress latency/jitter/loss")
+	}
+
+	// Add filter to direct traffic to our class
+	*commands = append(*commands, []string{
+		"tc", "filter", "add", "dev", ifaceName, "parent", "1:", "protocol", "all", "prio", "1", "u32",
+		"match", "u32", "0", "0", "flowid", "1:1",
+	})
+
+	return nil
+}
+
+// applyIngressLimits applies download limits and latency/jitter/loss to ingress traffic
+func (t *TCManager) applyIngressLimits(ifaceName string, limits *types.NetworkLimits, commands *[][]string) error {
+	// Check if we need ingress limits
+	if limits.DownloadRate == nil && !t.hasNetemLimits(limits) {
+		return nil
+	}
+
+	// Determine the rate to use
+	var rateStr string
+	if limits.DownloadRate != nil && limits.DownloadRate.ToBytes() > 0 {
+		rateStr = t.rateToTcString(limits.DownloadRate)
+		t.log.WithFields(logrus.Fields{
+			"interface":     ifaceName,
+			"download_rate": rateStr,
+		}).Info("Setting up ingress HTB with download limit")
+	} else {
+		// Use a high rate if we only have netem limits
+		rateStr = "10gbit"
+		t.log.WithField("interface", ifaceName).Debug("Setting up ingress HTB with default high rate for netem")
+	}
+
+	ifbInterface := "ifb-" + ifaceName
+
+	// Create and configure IFB interface
+	*commands = append(*commands, []string{"ip", "link", "add", ifbInterface, "type", "ifb"})
+	*commands = append(*commands, []string{"ip", "link", "set", ifbInterface, "up"})
+
+	// Add HTB qdisc to IFB interface
+	*commands = append(*commands, []string{
+		"tc", "qdisc", "add", "dev", ifbInterface, "root", "handle", "1:", "htb", "default", "30",
+	})
+
+	// Create HTB class with the rate
+	*commands = append(*commands, []string{
+		"tc", "class", "add", "dev", ifbInterface, "parent", "1:", "classid", "1:1", "htb",
+		"rate", rateStr, "ceil", rateStr,
+	})
+
+	// Add netem as leaf qdisc if needed
+	if t.hasNetemLimits(limits) {
+		netemCmd := []string{"tc", "qdisc", "add", "dev", ifbInterface, "parent", "1:1", "handle", "10:", "netem"}
+
+		if limits.Latency != nil {
+			latencyMs := limits.Latency.ToNanoseconds() / 1000000
+			netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
+
+			if limits.Jitter != nil {
+				jitterMs := limits.Jitter.ToNanoseconds() / 1000000
+				netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
+			}
+		}
+
+		if limits.Loss != nil {
+			netemCmd = append(netemCmd, "loss", fmt.Sprintf("%.2f%%", *limits.Loss))
+		}
+
+		*commands = append(*commands, netemCmd)
+		t.log.WithField("ifb_interface", ifbInterface).Debug("Added netem for ingress latency/jitter/loss")
+	}
+
+	// Add filter to direct traffic to our class
+	*commands = append(*commands, []string{
+		"tc", "filter", "add", "dev", ifbInterface, "parent", "1:", "protocol", "all", "prio", "1", "u32",
+		"match", "u32", "0", "0", "flowid", "1:1",
+	})
+
+	// Add ingress qdisc to main interface
+	*commands = append(*commands, []string{
+		"tc", "qdisc", "add", "dev", ifaceName, "handle", "ffff:", "ingress",
+	})
+
+	// Redirect ingress traffic to IFB interface
+	*commands = append(*commands, []string{
+		"tc", "filter", "add", "dev", ifaceName, "parent", "ffff:", "protocol", "all", "u32",
+		"match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", ifbInterface,
+	})
+
+	t.log.WithFields(logrus.Fields{
+		"interface":     ifaceName,
+		"ifb_interface": ifbInterface,
+	}).Debug("Set up IFB-based ingress limits")
+
+	return nil
+}
+
+// hasNetemLimits checks if any netem limits (latency, jitter, loss) are configured
+func (t *TCManager) hasNetemLimits(limits *types.NetworkLimits) bool {
+	return limits.Latency != nil || limits.Jitter != nil || limits.Loss != nil
 }
 
 // getInterfaces returns a list of network interfaces in the current namespace
@@ -203,25 +355,18 @@ func (t *TCManager) addDiagnostics(ctx context.Context, ifaceName string, limits
 		t.log.WithError(err).Warn("Failed to show qdisc status")
 	}
 
-	// Check class status if HTB is used
-	if limits.UploadRate != nil {
-		diagCmd = []string{"tc", "class", "show", "dev", ifaceName}
-		if err := t.execCommand(ctx, diagCmd); err != nil {
-			t.log.WithError(err).Warn("Failed to show class status")
-		}
+	// Check class status
+	diagCmd = []string{"tc", "class", "show", "dev", ifaceName}
+	if err := t.execCommand(ctx, diagCmd); err != nil {
+		t.log.WithError(err).Warn("Failed to show class status")
 	}
 
 	// Check IFB interface if download limits exist
-	if limits.DownloadRate != nil {
+	if limits.DownloadRate != nil || t.hasNetemLimits(limits) {
 		ifbInterface := "ifb-" + ifaceName
 		diagCmd = []string{"tc", "qdisc", "show", "dev", ifbInterface}
 		if err := t.execCommand(ctx, diagCmd); err != nil {
 			t.log.WithError(err).Warn("Failed to show IFB qdisc status")
-		}
-
-		diagCmd = []string{"tc", "class", "show", "dev", ifbInterface}
-		if err := t.execCommand(ctx, diagCmd); err != nil {
-			t.log.WithError(err).Warn("Failed to show IFB class status")
 		}
 	}
 }
@@ -236,11 +381,11 @@ func (t *TCManager) rateToTcString(rate *types.Rate) string {
 	case "bps":
 		return fmt.Sprintf("%dbit", rate.Value)
 	case "kbps":
-		return fmt.Sprintf("%dkbit", rate.Value) // Let tc handle kbit conversion
+		return fmt.Sprintf("%dkbit", rate.Value)
 	case "mbps":
-		return fmt.Sprintf("%dmbit", rate.Value) // Let tc handle mbit conversion
+		return fmt.Sprintf("%dmbit", rate.Value)
 	case "gbps":
-		return fmt.Sprintf("%dgbit", rate.Value) // Let tc handle gbit conversion
+		return fmt.Sprintf("%dgbit", rate.Value)
 	default:
 		return "0"
 	}
@@ -284,180 +429,6 @@ func (t *TCManager) execCommand(ctx context.Context, cmd []string) error {
 		"command": strings.Join(cmd, " "),
 		"output":  string(output),
 	}).Info("Traffic control command executed successfully")
-
-	return nil
-}
-
-func (t *TCManager) applyUploadLimits(ifaceName string, limits *types.NetworkLimits, commands *[][]string) error {
-	if limits.UploadRate == nil {
-		return nil
-	}
-
-	rateStr := t.rateToTcString(limits.UploadRate)
-	if rateStr == "0" {
-		return nil
-	}
-
-	t.log.WithFields(logrus.Fields{
-		"interface":   ifaceName,
-		"upload_rate": rateStr,
-	}).Info("Setting up egress (upload) HTB limits")
-
-	// Create HTB root qdisc for egress
-	*commands = append(*commands, []string{
-		"tc", "qdisc", "add", "dev", ifaceName, "root", "handle", "1:", "htb", "default", "30",
-	})
-
-	// Create parent class
-	*commands = append(*commands, []string{
-		"tc", "class", "add", "dev", ifaceName, "parent", "1:", "classid", "1:2", "htb",
-		"rate", rateStr, "ceil", rateStr, "burst", "1b", "cburst", "1b",
-	})
-
-	// Check if we need to add netem for latency/jitter/loss
-	if limits.Latency != nil || limits.Jitter != nil || limits.Loss != nil {
-		// Add netem as leaf qdisc under HTB class
-		netemCmd := []string{"tc", "qdisc", "add", "dev", ifaceName, "parent", "1:2", "handle", "20:", "netem"}
-
-		if limits.Latency != nil {
-			latencyMs := limits.Latency.ToNanoseconds() / 1000000
-			netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
-
-			if limits.Jitter != nil {
-				jitterMs := limits.Jitter.ToNanoseconds() / 1000000
-				netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
-			}
-		}
-
-		if limits.Loss != nil {
-			netemCmd = append(netemCmd, "loss", fmt.Sprintf("%.2f%%", *limits.Loss))
-		}
-
-		*commands = append(*commands, netemCmd)
-		t.log.WithField("interface", ifaceName).Debug("Added netem under HTB for latency/jitter/loss")
-	}
-
-	// Add filter to classify all traffic to the limited class
-	*commands = append(*commands, []string{
-		"tc", "filter", "add", "dev", ifaceName, "parent", "1:", "protocol", "all", "prio", "1", "u32",
-		"match", "u32", "0", "0", "flowid", "1:2",
-	})
-
-	t.log.WithField("interface", ifaceName).Debug("Added HTB egress (upload) limits")
-	return nil
-}
-
-func (t *TCManager) applyDownloadLimits(ifaceName string, limits *types.NetworkLimits, commands *[][]string) error {
-	if limits.DownloadRate == nil {
-		return nil
-	}
-
-	rateStr := t.rateToTcString(limits.DownloadRate)
-	if rateStr == "0" {
-		return nil
-	}
-
-	ifbInterface := "ifb-" + ifaceName
-
-	t.log.WithFields(logrus.Fields{
-		"interface":     ifaceName,
-		"ifb_interface": ifbInterface,
-		"download_rate": rateStr,
-	}).Info("Setting up download limits using IFB redirection")
-
-	// Step 1: Create and configure IFB interface
-	*commands = append(*commands, []string{"ip", "link", "add", ifbInterface, "type", "ifb"})
-	*commands = append(*commands, []string{"ip", "link", "set", ifbInterface, "up"})
-
-	// Step 2: Add HTB qdisc to IFB interface
-	*commands = append(*commands, []string{
-		"tc", "qdisc", "add", "dev", ifbInterface, "root", "handle", "1:", "htb", "default", "30",
-	})
-	*commands = append(*commands, []string{
-		"tc", "class", "add", "dev", ifbInterface, "parent", "1:", "classid", "1:2", "htb",
-		"rate", rateStr, "ceil", rateStr, "burst", "1b", "cburst", "1b",
-	})
-
-	// Check if we need to add netem for latency/jitter/loss on the IFB interface
-	if limits.Latency != nil || limits.Jitter != nil || limits.Loss != nil {
-		// Add netem as leaf qdisc under HTB class on IFB interface
-		netemCmd := []string{"tc", "qdisc", "add", "dev", ifbInterface, "parent", "1:2", "handle", "20:", "netem"}
-
-		if limits.Latency != nil {
-			latencyMs := limits.Latency.ToNanoseconds() / 1000000
-			netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
-
-			if limits.Jitter != nil {
-				jitterMs := limits.Jitter.ToNanoseconds() / 1000000
-				netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
-			}
-		}
-
-		if limits.Loss != nil {
-			netemCmd = append(netemCmd, "loss", fmt.Sprintf("%.2f%%", *limits.Loss))
-		}
-
-		*commands = append(*commands, netemCmd)
-		t.log.WithField("ifb_interface", ifbInterface).Debug("Added netem under HTB for latency/jitter/loss on IFB")
-	}
-
-	// Add filter to classify all traffic to the limited class on IFB interface
-	*commands = append(*commands, []string{
-		"tc", "filter", "add", "dev", ifbInterface, "parent", "1:", "protocol", "all", "prio", "1", "u32",
-		"match", "u32", "0", "0", "flowid", "1:2",
-	})
-
-	// Step 3: Add ingress qdisc to main interface
-	*commands = append(*commands, []string{
-		"tc", "qdisc", "add", "dev", ifaceName, "handle", "ffff:", "ingress",
-	})
-
-	// Step 4: Redirect ingress traffic to IFB interface
-	*commands = append(*commands, []string{
-		"tc", "filter", "add", "dev", ifaceName, "parent", "ffff:", "protocol", "ip", "u32",
-		"match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", ifbInterface,
-	})
-
-	t.log.WithFields(logrus.Fields{
-		"interface":     ifaceName,
-		"ifb_interface": ifbInterface,
-	}).Debug("Added IFB-based download limits")
-
-	return nil
-}
-
-func (t *TCManager) applyNetemLimits(ifaceName string, limits *types.NetworkLimits, commands *[][]string) error {
-	if limits.Latency == nil && limits.Jitter == nil && limits.Loss == nil {
-		return nil
-	}
-
-	// If we have upload or download limits, netem is already added as a child of HTB
-	// in applyUploadLimits or applyDownloadLimits functions
-	if (limits.UploadRate != nil && limits.UploadRate.ToBytes() > 0) ||
-		(limits.DownloadRate != nil && limits.DownloadRate.ToBytes() > 0) {
-		t.log.WithField("interface", ifaceName).Debug("Netem already handled with HTB for combined bandwidth and latency limits")
-		return nil
-	}
-
-	// No bandwidth limits, so we can add netem as root qdisc
-	netemCmd := []string{"tc", "qdisc", "add", "dev", ifaceName, "root", "handle", "1:", "netem"}
-
-	if limits.Latency != nil {
-		latencyMs := limits.Latency.ToNanoseconds() / 1000000
-		netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
-
-		if limits.Jitter != nil {
-			jitterMs := limits.Jitter.ToNanoseconds() / 1000000
-			netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
-		}
-	}
-
-	if limits.Loss != nil {
-		netemCmd = append(netemCmd, "loss", fmt.Sprintf("%.2f%%", *limits.Loss))
-	}
-
-	*commands = append(*commands, netemCmd)
-	t.log.WithField("interface", ifaceName).Debug("Added netem as root qdisc for network emulation")
 
 	return nil
 }
