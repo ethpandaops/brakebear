@@ -184,16 +184,16 @@ test-run-brakebear: build-dev
 
 # Run full integration test suite
 test-integration: test-build-image build-dev
-	@echo "Running integration tests..."
+	@echo "Running integration tests for scenario: $(TEST)"
 	@set -e; \
-	make test-up TEST=bandwidth-limit; \
+	make test-up TEST=$(TEST); \
 	echo "Starting BrakeBear in background..."; \
-	sudo ./$(BINARY_NAME) run --config tests/bandwidth-limit/brakebear.yaml & \
+	sudo ./$(BINARY_NAME) run --config $(TEST_DIR)/brakebear.yaml & \
 	BRAKEBEAR_PID=$$!; \
 	echo "BrakeBear PID: $$BRAKEBEAR_PID"; \
 	sleep 5; \
 	echo "Running test script..."; \
-	if make test-script TEST=bandwidth-limit; then \
+	if make test-script TEST=$(TEST); then \
 		echo "Integration tests passed"; \
 		RESULT=0; \
 	else \
