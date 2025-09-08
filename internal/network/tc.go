@@ -314,6 +314,29 @@ func (t *TCManager) applyUploadLimits(ifaceName string, limits *types.NetworkLim
 		"rate", rateStr, "ceil", rateStr, "burst", "1b", "cburst", "1b",
 	})
 
+	// Check if we need to add netem for latency/jitter/loss
+	if limits.Latency != nil || limits.Jitter != nil || limits.Loss != nil {
+		// Add netem as leaf qdisc under HTB class
+		netemCmd := []string{"tc", "qdisc", "add", "dev", ifaceName, "parent", "1:2", "handle", "20:", "netem"}
+
+		if limits.Latency != nil {
+			latencyMs := limits.Latency.ToNanoseconds() / 1000000
+			netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
+
+			if limits.Jitter != nil {
+				jitterMs := limits.Jitter.ToNanoseconds() / 1000000
+				netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
+			}
+		}
+
+		if limits.Loss != nil {
+			netemCmd = append(netemCmd, "loss", fmt.Sprintf("%.2f%%", *limits.Loss))
+		}
+
+		*commands = append(*commands, netemCmd)
+		t.log.WithField("interface", ifaceName).Debug("Added netem under HTB for latency/jitter/loss")
+	}
+
 	// Add filter to classify all traffic to the limited class
 	*commands = append(*commands, []string{
 		"tc", "filter", "add", "dev", ifaceName, "parent", "1:", "protocol", "all", "prio", "1", "u32",
@@ -355,6 +378,29 @@ func (t *TCManager) applyDownloadLimits(ifaceName string, limits *types.NetworkL
 		"rate", rateStr, "ceil", rateStr, "burst", "1b", "cburst", "1b",
 	})
 
+	// Check if we need to add netem for latency/jitter/loss on the IFB interface
+	if limits.Latency != nil || limits.Jitter != nil || limits.Loss != nil {
+		// Add netem as leaf qdisc under HTB class on IFB interface
+		netemCmd := []string{"tc", "qdisc", "add", "dev", ifbInterface, "parent", "1:2", "handle", "20:", "netem"}
+
+		if limits.Latency != nil {
+			latencyMs := limits.Latency.ToNanoseconds() / 1000000
+			netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
+
+			if limits.Jitter != nil {
+				jitterMs := limits.Jitter.ToNanoseconds() / 1000000
+				netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
+			}
+		}
+
+		if limits.Loss != nil {
+			netemCmd = append(netemCmd, "loss", fmt.Sprintf("%.2f%%", *limits.Loss))
+		}
+
+		*commands = append(*commands, netemCmd)
+		t.log.WithField("ifb_interface", ifbInterface).Debug("Added netem under HTB for latency/jitter/loss on IFB")
+	}
+
 	// Add filter to classify all traffic to the limited class on IFB interface
 	*commands = append(*commands, []string{
 		"tc", "filter", "add", "dev", ifbInterface, "parent", "1:", "protocol", "all", "prio", "1", "u32",
@@ -385,22 +431,25 @@ func (t *TCManager) applyNetemLimits(ifaceName string, limits *types.NetworkLimi
 		return nil
 	}
 
-	// Check if we have upload limits that would conflict
-	if limits.UploadRate != nil && limits.UploadRate.ToBytes() > 0 {
-		t.log.WithField("interface", ifaceName).Debug("Skipping netem because HTB is already applied for upload limits")
+	// If we have upload or download limits, netem is already added as a child of HTB
+	// in applyUploadLimits or applyDownloadLimits functions
+	if (limits.UploadRate != nil && limits.UploadRate.ToBytes() > 0) ||
+		(limits.DownloadRate != nil && limits.DownloadRate.ToBytes() > 0) {
+		t.log.WithField("interface", ifaceName).Debug("Netem already handled with HTB for combined bandwidth and latency limits")
 		return nil
 	}
 
+	// No bandwidth limits, so we can add netem as root qdisc
 	netemCmd := []string{"tc", "qdisc", "add", "dev", ifaceName, "root", "handle", "1:", "netem"}
 
 	if limits.Latency != nil {
 		latencyMs := limits.Latency.ToNanoseconds() / 1000000
 		netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
-	}
 
-	if limits.Jitter != nil {
-		jitterMs := limits.Jitter.ToNanoseconds() / 1000000
-		netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
+		if limits.Jitter != nil {
+			jitterMs := limits.Jitter.ToNanoseconds() / 1000000
+			netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
+		}
 	}
 
 	if limits.Loss != nil {
@@ -408,7 +457,7 @@ func (t *TCManager) applyNetemLimits(ifaceName string, limits *types.NetworkLimi
 	}
 
 	*commands = append(*commands, netemCmd)
-	t.log.WithField("interface", ifaceName).Debug("Added netem network emulation")
+	t.log.WithField("interface", ifaceName).Debug("Added netem as root qdisc for network emulation")
 
 	return nil
 }
