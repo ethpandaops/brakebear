@@ -17,12 +17,9 @@ BrakeBear applies network bandwidth limits, latency, jitter, and packet loss to 
 
 ## Quick Start
 
-1. **Build BrakeBear**:
-   ```bash
-   make build
-   ```
 
-2. **Create configuration** (`brakebear.yaml`):
+
+**Create configuration** (`brakebear.yaml`):
    ```yaml
    log_level: "info"
    docker_containers:
@@ -33,11 +30,29 @@ BrakeBear applies network bandwidth limits, latency, jitter, and packet loss to 
      jitter: 10ms
      loss: 0.1%
    ```
+**Run it using docker:**
+```bash
+docker run --rm -it \
+  --privileged \
+  --network host \
+  --pid host \
+  --name brakebear \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v $(pwd)/brakebear.yaml:/etc/brakebear/brakebear.yaml \
+  ghcr.io/ethpandaops/brakebear:master
+```
+Or build it from the source code:
+1. **Build BrakeBear**:
+   ```bash
+   make build
+   ```
 
-3. **Run BrakeBear**:
+2. **Run BrakeBear**:
    ```bash
    sudo ./brakebear run --config brakebear.yaml
    ```
+
+> **Note**: The `--privileged`, `--network host`, and `--pid host` flags are required for BrakeBear to access container network namespaces and apply traffic control rules.
 
 ## Configuration
 
