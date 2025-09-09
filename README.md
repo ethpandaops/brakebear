@@ -1,11 +1,9 @@
-# Brake Bear
-
-
-BrakeBear applies network bandwidth limits, latency, jitter, and packet loss to Docker containers using Linux traffic control (tc) and network namespaces.
-
 <div align="center">
-  <img src="assets/logo.jpg" alt="BrakeBear Logo" width="300"/>
+  <img src="assets/logo-wide.jpg" alt="BrakeBear Logo" width="1650"/>
 </div>
+
+
+**BrakeBear** applies network bandwidth limits, latency, jitter, and packet loss to Docker containers using Linux traffic control (tc) and network namespaces.
 
 ## Features
 
