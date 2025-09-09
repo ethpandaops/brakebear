@@ -110,43 +110,39 @@ func (t *TCManager) GetInterfaces() ([]string, error) {
 }
 
 // generateExclusionFilters creates tc filter commands for excluded CIDR ranges
+// Uses smart filtering to avoid excluding the container's own traffic
 func (t *TCManager) generateExclusionFilters(ifaceName string, parent string, excludeRanges []string, isIngress bool) [][]string {
 	var filters [][]string
 
 	for _, cidr := range excludeRanges {
-		// Generate filters for both source and destination
-		// For egress: exclude if destination is in range
-		// For ingress (IFB): exclude if source is in range
-
 		if isIngress {
-			// On IFB device, match source IPs
+			// INGRESS (Download): Only exclude traffic FROM external sources in the CIDR range
+			// This allows responses from excluded networks to flow normally while
+			// preventing the container from being limited when talking to those networks
 			filters = append(filters, []string{
 				"tc", "filter", "add", "dev", ifaceName, "parent", parent,
 				"protocol", "ip", "prio", "1", "u32",
 				"match", "ip", "src", cidr, "flowid", "1:2",
 			})
+			t.log.WithFields(logrus.Fields{
+				"interface": ifaceName,
+				"cidr":      cidr,
+				"direction": "ingress",
+			}).Debug("Created ingress exclusion filter for external sources")
 		} else {
-			// On egress, match destination IPs
+			// EGRESS (Upload): Only exclude traffic TO destinations in the CIDR range
+			// This prevents applying latency to local network traffic while
+			// still applying limits to external traffic
 			filters = append(filters, []string{
 				"tc", "filter", "add", "dev", ifaceName, "parent", parent,
 				"protocol", "ip", "prio", "1", "u32",
 				"match", "ip", "dst", cidr, "flowid", "1:2",
 			})
-		}
-
-		// Also match in reverse direction for bidirectional exclusion
-		if isIngress {
-			filters = append(filters, []string{
-				"tc", "filter", "add", "dev", ifaceName, "parent", parent,
-				"protocol", "ip", "prio", "1", "u32",
-				"match", "ip", "dst", cidr, "flowid", "1:2",
-			})
-		} else {
-			filters = append(filters, []string{
-				"tc", "filter", "add", "dev", ifaceName, "parent", parent,
-				"protocol", "ip", "prio", "1", "u32",
-				"match", "ip", "src", cidr, "flowid", "1:2",
-			})
+			t.log.WithFields(logrus.Fields{
+				"interface": ifaceName,
+				"cidr":      cidr,
+				"direction": "egress",
+			}).Debug("Created egress exclusion filter for local destinations")
 		}
 	}
 
