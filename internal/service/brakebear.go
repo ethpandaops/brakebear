@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ethpandaops/brakebear/internal/config"
+	"github.com/ethpandaops/brakebear/internal/dns"
 	"github.com/ethpandaops/brakebear/internal/docker"
 	"github.com/ethpandaops/brakebear/internal/network"
 	"github.com/ethpandaops/brakebear/internal/state"
@@ -26,15 +28,16 @@ type Service interface {
 
 // service implements the Service interface and orchestrates all BrakeBear components
 type service struct {
-	config     *config.Config
-	docker     *docker.Client
-	inspector  *docker.Inspector
-	monitor    *docker.Monitor
-	controller *network.Controller
-	state      state.Manager
-	log        logrus.FieldLogger
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	config      *config.Config
+	docker      *docker.Client
+	inspector   *docker.Inspector
+	monitor     *docker.Monitor
+	controller  *network.Controller
+	state       state.Manager
+	dnsResolver *dns.Resolver
+	log         logrus.FieldLogger
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 // NewService creates a new BrakeBear service with all required components
@@ -49,13 +52,14 @@ func NewService(cfg *config.Config, log logrus.FieldLogger) Service {
 	logger := log.WithField("package", "service")
 
 	return &service{
-		config:     cfg,
-		docker:     nil, // Will be initialized in Start()
-		inspector:  nil, // Will be initialized in Start()
-		monitor:    nil, // Will be initialized in Start()
-		controller: network.NewController(logger),
-		state:      state.NewManager(logger),
-		log:        logger,
+		config:      cfg,
+		docker:      nil, // Will be initialized in Start()
+		inspector:   nil, // Will be initialized in Start()
+		monitor:     nil, // Will be initialized in Start()
+		controller:  network.NewController(logger),
+		state:       state.NewManager(logger),
+		dnsResolver: dns.NewResolver(logger),
+		log:         logger,
 	}
 }
 
@@ -92,6 +96,12 @@ func (s *service) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start state manager: %w", err)
 	}
 	s.log.Info("State manager started successfully")
+
+	// Start DNS resolver
+	if err := s.dnsResolver.Start(serviceCtx); err != nil {
+		return fmt.Errorf("failed to start DNS resolver: %w", err)
+	}
+	s.log.Info("DNS resolver started successfully")
 
 	// Start Docker monitor
 	if err := s.monitor.Start(ctx); err != nil {
@@ -134,6 +144,15 @@ func (s *service) Stop() error {
 			stopErrors = append(stopErrors, fmt.Errorf("failed to stop Docker monitor: %w", err))
 		} else {
 			s.log.Info("Docker monitor stopped successfully")
+		}
+	}
+
+	// Stop DNS resolver
+	if s.dnsResolver != nil {
+		if err := s.dnsResolver.Stop(); err != nil {
+			stopErrors = append(stopErrors, fmt.Errorf("failed to stop DNS resolver: %w", err))
+		} else {
+			s.log.Info("DNS resolver stopped successfully")
 		}
 	}
 
@@ -350,6 +369,14 @@ func (s *service) processContainer(ctx context.Context, cfg config.ContainerConf
 		return fmt.Errorf("failed to parse network limits: %w", err)
 	}
 
+	// Resolve DNS exclusions before applying limits
+	if err := s.resolveDNSExclusions(ctx, limits); err != nil {
+		s.log.WithError(err).Warn("Failed to resolve DNS exclusions, proceeding with existing exclusions")
+	}
+
+	// Start periodic DNS resolution for any DNS-based exclusions
+	s.startDNSResolutionForContainer(ctx, limits)
+
 	// Check if we already have this container in state
 	_, exists := s.state.GetContainerState(container.ID)
 	if exists {
@@ -379,6 +406,75 @@ func (s *service) processContainer(ctx context.Context, cfg config.ContainerConf
 	}
 
 	return nil
+}
+
+// resolveDNSExclusions resolves DNS hostnames and updates exclusion networks with resolved IPs
+func (s *service) resolveDNSExclusions(ctx context.Context, limits *types.NetworkLimits) error {
+	if limits == nil || len(limits.ExcludeNetworks) == 0 {
+		return nil
+	}
+
+	for i, exclude := range limits.ExcludeNetworks {
+		if exclude.Type == "dns" && exclude.DNSConfig != nil {
+			s.log.WithFields(logrus.Fields{
+				"hostnames": exclude.DNSConfig.Names,
+			}).Info("Resolving DNS hostnames for exclusion")
+
+			ips, err := s.dnsResolver.ResolveHostnames(ctx, exclude.DNSConfig.Names)
+			if err != nil {
+				return fmt.Errorf("failed to resolve DNS hostnames: %w", err)
+			}
+
+			if len(ips) > 0 {
+				// Convert resolved IPv4 IPs to CIDR ranges (skip IPv6 for now)
+				var cidrs []string
+				for _, ip := range ips {
+					parsedIP := net.ParseIP(ip)
+					if parsedIP == nil {
+						continue
+					}
+					// Only process IPv4 addresses for now
+					if parsedIP.To4() != nil {
+						cidr := ip + "/32" // IPv4
+						cidrs = append(cidrs, cidr)
+					}
+				}
+
+				// Convert DNS exclusion to CIDR exclusion with resolved IPs
+				limits.ExcludeNetworks[i] = types.ExcludeNetwork{
+					Type: "cidr",
+					CIDRConfig: &types.CIDRConfig{
+						Ranges: cidrs,
+					},
+				}
+
+				s.log.WithFields(logrus.Fields{
+					"hostnames":    exclude.DNSConfig.Names,
+					"resolved_ips": ips,
+					"cidrs":        cidrs,
+				}).Info("DNS hostnames resolved and converted to CIDR exclusions")
+			}
+		}
+	}
+
+	return nil
+}
+
+// startDNSResolutionForContainer starts periodic DNS resolution for DNS-based exclusions
+func (s *service) startDNSResolutionForContainer(ctx context.Context, limits *types.NetworkLimits) {
+	if limits == nil || len(limits.ExcludeNetworks) == 0 {
+		return
+	}
+
+	for _, exclude := range limits.ExcludeNetworks {
+		if exclude.Type == "dns" && exclude.DNSConfig != nil {
+			s.log.WithFields(logrus.Fields{
+				"hostnames": exclude.DNSConfig.Names,
+				"interval":  exclude.DNSConfig.CheckInterval,
+			}).Info("Starting DNS resolution for exclusion")
+			s.dnsResolver.StartPeriodicResolution(ctx, exclude.DNSConfig.Names, exclude.DNSConfig.CheckInterval)
+		}
+	}
 }
 
 // removeStaleContainers cleans up containers not in current configuration

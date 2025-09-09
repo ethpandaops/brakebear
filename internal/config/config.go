@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/ethpandaops/brakebear/internal/types"
 	"github.com/sirupsen/logrus"
@@ -42,16 +43,26 @@ type ContainerConfig struct {
 
 // ExcludeNetwork represents a network exclusion configuration
 type ExcludeNetwork struct {
-	// Type specifies the exclusion type (currently only "cidr" is supported)
+	// Type specifies the exclusion type (cidr, private-ranges, dns)
 	Type string `mapstructure:"type"`
 	// CIDRConfig contains CIDR-specific configuration
 	CIDRConfig *CIDRConfig `mapstructure:"cidr_config"`
+	// DNSConfig contains DNS-specific configuration
+	DNSConfig *DNSConfig `mapstructure:"dns_config"`
 }
 
 // CIDRConfig contains CIDR range configurations
 type CIDRConfig struct {
 	// Ranges specifies the CIDR ranges to exclude
 	Ranges []string `mapstructure:"ranges"`
+}
+
+// DNSConfig contains DNS resolution configuration
+type DNSConfig struct {
+	// Names specifies the hostnames to resolve
+	Names []string `mapstructure:"names"`
+	// CheckInterval specifies how often to check DNS for changes
+	CheckInterval string `mapstructure:"check_interval"`
 }
 
 // LoadConfig loads configuration from a YAML file using viper
@@ -189,10 +200,23 @@ func (c *ContainerConfig) GetExcludeNetworkRanges() ([]string, error) {
 				Ranges: exclude.CIDRConfig.Ranges,
 			}
 		}
+		if exclude.DNSConfig != nil {
+			interval, err := time.ParseDuration(exclude.DNSConfig.CheckInterval)
+			if err != nil {
+				// Default to 5 minutes if parsing fails
+				interval = 5 * time.Minute
+			}
+			typesExclude.DNSConfig = &types.DNSConfig{
+				Names:         exclude.DNSConfig.Names,
+				CheckInterval: interval,
+			}
+		}
 		typesExcludes = append(typesExcludes, typesExclude)
 	}
 
-	ranges, err := types.ParseExcludeNetworks(typesExcludes)
+	// Note: DNS resolver not available at config parsing time, pass nil for now
+	// DNS exclusions will be resolved at runtime when the resolver is available
+	ranges, err := types.ParseExcludeNetworks(typesExcludes, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse exclude networks: %w", err)
 	}
@@ -304,6 +328,19 @@ func (c *ContainerConfig) parseExcludeNetworks(limits *types.NetworkLimits) erro
 			}
 		}
 
+		// Convert DNSConfig if present
+		if exclude.DNSConfig != nil {
+			interval, err := time.ParseDuration(exclude.DNSConfig.CheckInterval)
+			if err != nil {
+				// Default to 5 minutes if parsing fails
+				interval = 5 * time.Minute
+			}
+			typesExclude.DNSConfig = &types.DNSConfig{
+				Names:         exclude.DNSConfig.Names,
+				CheckInterval: interval,
+			}
+		}
+
 		excludeNetworks = append(excludeNetworks, typesExclude)
 	}
 
@@ -411,38 +448,98 @@ func validateExcludeNetwork(exclude ExcludeNetwork, index int) error {
 		return fmt.Errorf("exclude network %d: type cannot be empty", index)
 	}
 
-	// Validate exclude network type
-	validTypes := []string{"cidr", "private-ranges"}
-	isValidType := false
-	for _, validType := range validTypes {
-		if exclude.Type == validType {
-			isValidType = true
-			break
-		}
-	}
-	if !isValidType {
-		return fmt.Errorf("exclude network %d: unsupported type '%s', supported types: %v", index, exclude.Type, validTypes)
+	if err := validateExcludeNetworkType(exclude.Type, index); err != nil {
+		return err
 	}
 
-	// Type-specific validation
+	return validateExcludeNetworkConfig(exclude, index)
+}
+
+// validateExcludeNetworkType validates the exclude network type
+func validateExcludeNetworkType(excludeType string, index int) error {
+	validTypes := []string{"cidr", "private-ranges", "dns"}
+	for _, validType := range validTypes {
+		if excludeType == validType {
+			return nil
+		}
+	}
+	return fmt.Errorf("exclude network %d: unsupported type '%s', supported types: %v", index, excludeType, validTypes)
+}
+
+// validateExcludeNetworkConfig validates type-specific configuration
+func validateExcludeNetworkConfig(exclude ExcludeNetwork, index int) error {
 	switch exclude.Type {
 	case "cidr":
-		if exclude.CIDRConfig == nil {
-			return fmt.Errorf("exclude network %d: cidr_config is required for type 'cidr'", index)
-		}
-		if len(exclude.CIDRConfig.Ranges) == 0 {
-			return fmt.Errorf("exclude network %d: cidr_config.ranges cannot be empty for type 'cidr'", index)
-		}
-		for j, cidr := range exclude.CIDRConfig.Ranges {
-			if err := types.ValidateCIDRRange(cidr); err != nil {
-				return fmt.Errorf("exclude network %d, CIDR range %d: %w", index, j, err)
-			}
-		}
+		return validateCIDRExcludeConfig(exclude.CIDRConfig, index)
 	case "private-ranges":
-		if exclude.CIDRConfig != nil {
-			return fmt.Errorf("exclude network %d: cidr_config should not be specified for type 'private-ranges'", index)
-		}
+		return validatePrivateRangesConfig(exclude.CIDRConfig, index)
+	case "dns":
+		return validateDNSExcludeConfig(exclude.DNSConfig, index)
+	default:
+		return nil
+	}
+}
+
+// validateCIDRExcludeConfig validates CIDR exclusion configuration
+func validateCIDRExcludeConfig(config *CIDRConfig, index int) error {
+	if config == nil {
+		return fmt.Errorf("exclude network %d: cidr_config is required for type 'cidr'", index)
+	}
+	if len(config.Ranges) == 0 {
+		return fmt.Errorf("exclude network %d: cidr_config.ranges cannot be empty for type 'cidr'", index)
 	}
 
+	for j, cidr := range config.Ranges {
+		if err := types.ValidateCIDRRange(cidr); err != nil {
+			return fmt.Errorf("exclude network %d, CIDR range %d: %w", index, j, err)
+		}
+	}
+	return nil
+}
+
+// validatePrivateRangesConfig validates private ranges configuration
+func validatePrivateRangesConfig(config *CIDRConfig, index int) error {
+	if config != nil {
+		return fmt.Errorf("exclude network %d: cidr_config should not be specified for type 'private-ranges'", index)
+	}
+	return nil
+}
+
+// validateDNSExcludeConfig validates DNS exclusion configuration
+func validateDNSExcludeConfig(config *DNSConfig, index int) error {
+	if config == nil {
+		return fmt.Errorf("exclude network %d: dns_config is required for type 'dns'", index)
+	}
+	if len(config.Names) == 0 {
+		return fmt.Errorf("exclude network %d: dns_config.names cannot be empty for type 'dns'", index)
+	}
+
+	if err := validateDNSCheckInterval(config, index); err != nil {
+		return err
+	}
+
+	return validateDNSHostnames(config.Names, index)
+}
+
+// validateDNSCheckInterval validates the DNS check interval
+func validateDNSCheckInterval(config *DNSConfig, index int) error {
+	if config.CheckInterval == "" {
+		config.CheckInterval = "5m" // Default to 5 minutes
+		return nil
+	}
+
+	if _, err := time.ParseDuration(config.CheckInterval); err != nil {
+		return fmt.Errorf("exclude network %d: invalid dns_config.check_interval '%s': %w", index, config.CheckInterval, err)
+	}
+	return nil
+}
+
+// validateDNSHostnames validates the DNS hostnames
+func validateDNSHostnames(hostnames []string, index int) error {
+	for j, hostname := range hostnames {
+		if hostname == "" {
+			return fmt.Errorf("exclude network %d, hostname %d: hostname cannot be empty", index, j)
+		}
+	}
 	return nil
 }

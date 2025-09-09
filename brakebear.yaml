@@ -43,3 +43,34 @@ docker_containers:
   upload_rate: 500kbps
   exclude_networks:
     - type: "private-ranges"  # Automatically excludes 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+
+# Example with DNS-based network exclusions
+- name: "test-dns-exclusions"
+  download_rate: 1Mbps
+  upload_rate: 500kbps
+  latency: 100ms
+  exclude_networks:
+    - type: "dns"
+      dns_config:
+        names:
+          - "api.github.com"
+          - "registry.npmjs.org"
+          - "cdn.jsdelivr.net"
+        check_interval: "10m"
+
+# Example combining DNS and CIDR exclusions
+- name: "test-mixed-exclusions"
+  download_rate: 2Mbps
+  upload_rate: 1Mbps
+  exclude_networks:
+    - type: "private-ranges"  # Local networks
+    - type: "dns"             # Dynamic cloud services
+      dns_config:
+        names:
+          - "*.amazonaws.com"
+          - "*.googleapis.com"
+        check_interval: "5m"
+    - type: "cidr"            # Static important servers
+      cidr_config:
+        ranges:
+          - "203.0.113.0/24"
