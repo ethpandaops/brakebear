@@ -31,9 +31,8 @@ type DNSConfig struct {
 
 // PortConfig contains port exclusion configuration
 type PortConfig struct {
-	TCP  []string `json:"tcp,omitempty"`
-	UDP  []string `json:"udp,omitempty"`
-	Both []string `json:"both,omitempty"`
+	TCP []string `json:"tcp,omitempty"`
+	UDP []string `json:"udp,omitempty"`
 }
 
 // PortRange represents a range of ports
@@ -45,7 +44,7 @@ type PortRange struct {
 // PortSpec represents a single port specification
 type PortSpec struct {
 	Port     int
-	Protocol string // "tcp", "udp", or "both"
+	Protocol string // "tcp", "udp"
 }
 
 // DNSResolver interface for DNS resolution operations
@@ -105,7 +104,7 @@ func processExclude(exclude ExcludeNetwork, resolver DNSResolver) ([]string, err
 	switch exclude.Type {
 	case "cidr":
 		return processCIDRExclude(exclude.CIDRConfig)
-	case "private-ranges":
+	case "private-networks":
 		return GetDefaultPrivateRanges(), nil
 	case "dns":
 		return processDNSExclude(exclude.DNSConfig, resolver)
@@ -114,7 +113,7 @@ func processExclude(exclude ExcludeNetwork, resolver DNSResolver) ([]string, err
 		return nil, nil
 	default:
 		if exclude.Type != "" {
-			return nil, fmt.Errorf("unsupported exclude network type '%s', supported types: 'cidr', 'private-ranges', 'dns', 'ports'", exclude.Type)
+			return nil, fmt.Errorf("unsupported exclude network type '%s', supported types: 'cidr', 'private-networks', 'dns', 'ports'", exclude.Type)
 		}
 		return nil, nil
 	}
@@ -200,20 +199,6 @@ func ParsePortConfig(config *PortConfig) ([]PortSpec, error) {
 		}
 		for _, portRange := range portRanges {
 			for port := portRange.Start; port <= portRange.End; port++ {
-				specs = append(specs, PortSpec{Port: port, Protocol: "udp"})
-			}
-		}
-	}
-
-	// Parse Both protocols ports
-	for _, portStr := range config.Both {
-		portRanges, err := ParsePortString(portStr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid Both port specification '%s': %w", portStr, err)
-		}
-		for _, portRange := range portRanges {
-			for port := portRange.Start; port <= portRange.End; port++ {
-				specs = append(specs, PortSpec{Port: port, Protocol: "tcp"})
 				specs = append(specs, PortSpec{Port: port, Protocol: "udp"})
 			}
 		}

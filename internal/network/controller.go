@@ -462,13 +462,16 @@ func (c *Controller) updateLimitsWithNewIPs(limits *types.NetworkLimits, oldIPs,
 
 // copyNetworkLimits creates a deep copy of network limits
 func (c *Controller) copyNetworkLimits(limits *types.NetworkLimits) *types.NetworkLimits {
+	excludeNetworks := make([]types.ExcludeNetwork, len(limits.ExcludeNetworks))
+	copy(excludeNetworks, limits.ExcludeNetworks)
+
 	return &types.NetworkLimits{
 		DownloadRate:    limits.DownloadRate,
 		UploadRate:      limits.UploadRate,
 		Latency:         limits.Latency,
 		Jitter:          limits.Jitter,
 		Loss:            limits.Loss,
-		ExcludeNetworks: make([]types.ExcludeNetwork, len(limits.ExcludeNetworks)),
+		ExcludeNetworks: excludeNetworks,
 	}
 }
 
