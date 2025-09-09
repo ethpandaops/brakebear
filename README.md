@@ -29,7 +29,12 @@ BrakeBear applies network bandwidth limits, latency, jitter, and packet loss to 
      latency: 50ms
      jitter: 10ms
      loss: 0.1%
+     exclude_networks:
+       - type: "private-ranges"
    ```
+
+For more examples, see the [example config file](brakebear.yaml).
+
 **Run it using docker:**
 ```bash
 docker run --rm -it \
