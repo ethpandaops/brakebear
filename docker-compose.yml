@@ -18,7 +18,7 @@ services:
 
     # Mount Docker socket to manage containers
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./brakebear.yaml:/etc/brakebear/brakebear.yaml:ro
 
     # Command to run the application
