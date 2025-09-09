@@ -214,7 +214,9 @@ func (t *TCManager) applyEgressLimits(ifaceName string, limits *types.NetworkLim
 	}
 
 	// Process excluded networks
-	excludeRanges, err := types.ParseExcludeNetworks(limits.ExcludeNetworks)
+	// Note: DNS resolver not available at TC level, so DNS exclusions won't be resolved here
+	// This is handled at a higher level in the service
+	excludeRanges, err := types.ParseExcludeNetworks(limits.ExcludeNetworks, nil)
 	if err != nil {
 		return fmt.Errorf("failed to parse exclude networks: %w", err)
 	}
@@ -301,7 +303,9 @@ func (t *TCManager) applyIngressLimits(ifaceName string, limits *types.NetworkLi
 	}
 
 	// Process excluded networks
-	excludeRanges, err := types.ParseExcludeNetworks(limits.ExcludeNetworks)
+	// Note: DNS resolver not available at TC level, so DNS exclusions won't be resolved here
+	// This is handled at a higher level in the service
+	excludeRanges, err := types.ParseExcludeNetworks(limits.ExcludeNetworks, nil)
 	if err != nil {
 		return fmt.Errorf("failed to parse exclude networks: %w", err)
 	}

@@ -7,3 +7,8 @@ docker_containers:
   upload_rate: 5Mbps
   exclude_networks:
     - type: "private-ranges"  # Excludes RFC1918 private networks by default
+    - type: "dns"
+      dns_config:
+        names:
+          - "speedtest.tele2.net" #  wget --report-speed=bits --show-progress -O /dev/null http://speedtest.tele2.net/100MB.zip
+          #- "ash-speed.hetzner.com" #  wget --report-speed=bits --show-progress -O /dev/null https://ash-speed.hetzner.com/100MB.bin
