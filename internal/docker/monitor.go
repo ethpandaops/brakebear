@@ -16,17 +16,18 @@ import (
 
 // Monitor provides Docker container event monitoring capabilities
 type Monitor struct {
-	client    *Client
-	inspector *Inspector
-	log       logrus.FieldLogger
-	eventCh   chan ContainerEvent
-	done      chan struct{}
-	wg        sync.WaitGroup
+	client       *Client
+	inspector    *Inspector
+	log          logrus.FieldLogger
+	eventCh      chan ContainerEvent
+	done         chan struct{}
+	wg           sync.WaitGroup
+	hasConnected bool // Track if we've successfully connected before
 }
 
 // ContainerEvent represents a Docker container lifecycle event
 type ContainerEvent struct {
-	Type        string // "start", "stop", "die", "update"
+	Type        string // "start", "stop", "die", "update", "reconnected"
 	ContainerID string
 	Timestamp   time.Time
 }
@@ -136,6 +137,27 @@ func (m *Monitor) startEventStream(ctx context.Context) error {
 	eventsCh, errsCh := cli.Events(ctx, events.ListOptions{
 		Filters: eventFilters,
 	})
+
+	// Check if this is a reconnection (not initial connection)
+	isReconnection := m.hasConnected
+	m.hasConnected = true
+
+	// Send reconnected event if this is a reconnection
+	if isReconnection {
+		m.log.Info("Docker event stream reconnected successfully")
+		reconnectedEvent := ContainerEvent{
+			Type:        "reconnected",
+			ContainerID: "", // No specific container for this event
+			Timestamp:   time.Now(),
+		}
+		select {
+		case m.eventCh <- reconnectedEvent:
+		case <-ctx.Done():
+			return fmt.Errorf("event stream cancelled: %w", ctx.Err())
+		case <-m.done:
+			return nil
+		}
+	}
 
 	for {
 		select {
