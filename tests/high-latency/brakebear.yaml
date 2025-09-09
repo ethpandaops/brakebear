@@ -12,3 +12,6 @@ docker_containers:
         names:
           - "speedtest.tele2.net" #  wget --report-speed=bits --show-progress -O /dev/null http://speedtest.tele2.net/100MB.zip
           #- "ash-speed.hetzner.com" #  wget --report-speed=bits --show-progress -O /dev/null https://ash-speed.hetzner.com/100MB.bin
+    - type: "ports"
+      port_config:
+        tcp: ["443"]
