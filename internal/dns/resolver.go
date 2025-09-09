@@ -17,22 +17,36 @@ type CacheEntry struct {
 	ExpiresAt   time.Time
 }
 
+// DNSChangeCallback is called when DNS resolution results change
+type DNSChangeCallback func(ctx context.Context, hostname string, oldIPs, newIPs []string)
+
+// PeriodicResolution tracks a periodic DNS resolution job
+type PeriodicResolution struct {
+	hostnames []string
+	interval  time.Duration
+	callback  DNSChangeCallback
+	cancel    context.CancelFunc
+}
+
 // Resolver implements DNS resolution with caching
 type Resolver struct {
-	cache    map[string]*CacheEntry
-	cacheMu  sync.RWMutex
-	log      logrus.FieldLogger
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	resolver *net.Resolver
+	cache         map[string]*CacheEntry
+	cacheMu       sync.RWMutex
+	log           logrus.FieldLogger
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	resolver      *net.Resolver
+	resolutions   map[string]*PeriodicResolution
+	resolutionsMu sync.RWMutex
 }
 
 // NewResolver creates a new DNS resolver
 func NewResolver(log logrus.FieldLogger) *Resolver {
 	return &Resolver{
-		cache:    make(map[string]*CacheEntry),
-		log:      log.WithField("package", "dns.resolver"),
-		resolver: &net.Resolver{},
+		cache:       make(map[string]*CacheEntry),
+		log:         log.WithField("package", "dns.resolver"),
+		resolver:    &net.Resolver{},
+		resolutions: make(map[string]*PeriodicResolution),
 	}
 }
 
@@ -102,12 +116,54 @@ func (r *Resolver) GetCachedIPs(hostname string) ([]string, bool) {
 
 // StartPeriodicResolution starts periodic resolution for given hostnames
 func (r *Resolver) StartPeriodicResolution(ctx context.Context, hostnames []string, interval time.Duration) {
+	r.StartPeriodicResolutionWithCallback(ctx, hostnames, interval, nil)
+}
+
+// StartPeriodicResolutionWithCallback starts periodic resolution with change detection
+func (r *Resolver) StartPeriodicResolutionWithCallback(ctx context.Context, hostnames []string, interval time.Duration, callback DNSChangeCallback) {
 	if len(hostnames) == 0 {
 		return
 	}
 
-	r.log.WithField("hostnames", hostnames).WithField("interval", interval).Info("Starting periodic DNS resolution")
-	r.startPeriodicResolution(ctx, hostnames, interval)
+	// Create unique key for this resolution job
+	jobKey := r.createJobKey(hostnames, interval)
+
+	r.log.WithFields(map[string]interface{}{
+		"hostnames": hostnames,
+		"interval":  interval,
+		"job_key":   jobKey,
+	}).Info("Starting periodic DNS resolution with change detection")
+
+	// Stop existing resolution if any
+	r.StopPeriodicResolution(jobKey)
+
+	// Create new resolution context
+	resCtx, resCancel := context.WithCancel(ctx)
+
+	// Store resolution job
+	r.resolutionsMu.Lock()
+	r.resolutions[jobKey] = &PeriodicResolution{
+		hostnames: hostnames,
+		interval:  interval,
+		callback:  callback,
+		cancel:    resCancel,
+	}
+	r.resolutionsMu.Unlock()
+
+	// Start the resolution goroutine
+	r.startPeriodicResolutionWithCallback(resCtx, hostnames, interval, callback)
+}
+
+// StopPeriodicResolution stops a specific periodic resolution job
+func (r *Resolver) StopPeriodicResolution(jobKey string) {
+	r.resolutionsMu.Lock()
+	defer r.resolutionsMu.Unlock()
+
+	if resolution, exists := r.resolutions[jobKey]; exists {
+		resolution.cancel()
+		delete(r.resolutions, jobKey)
+		r.log.WithField("job_key", jobKey).Debug("Stopped periodic DNS resolution")
+	}
 }
 
 // resolveHost resolves single hostname to IP addresses
@@ -138,8 +194,8 @@ func (r *Resolver) resolveHost(ctx context.Context, hostname string) ([]string, 
 	return ipStrings, nil
 }
 
-// startPeriodicResolution starts background DNS resolution
-func (r *Resolver) startPeriodicResolution(ctx context.Context, hostnames []string, interval time.Duration) {
+// startPeriodicResolutionWithCallback starts background DNS resolution with change detection
+func (r *Resolver) startPeriodicResolutionWithCallback(ctx context.Context, hostnames []string, interval time.Duration, callback DNSChangeCallback) {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -153,9 +209,24 @@ func (r *Resolver) startPeriodicResolution(ctx context.Context, hostnames []stri
 				return
 			case <-ticker.C:
 				for _, hostname := range hostnames {
-					_, err := r.resolveHost(ctx, hostname)
+					// Get old IPs from cache
+					oldIPs, _ := r.GetCachedIPs(hostname)
+
+					// Resolve new IPs
+					newIPs, err := r.resolveHost(ctx, hostname)
 					if err != nil {
 						r.log.WithError(err).WithField("hostname", hostname).Warn("Periodic DNS resolution failed")
+						continue
+					}
+
+					// Check if IPs changed and notify callback
+					if callback != nil && r.ipsChanged(oldIPs, newIPs) {
+						r.log.WithFields(map[string]interface{}{
+							"hostname": hostname,
+							"old_ips":  oldIPs,
+							"new_ips":  newIPs,
+						}).Info("DNS IPs changed, triggering callback")
+						callback(ctx, hostname, oldIPs, newIPs)
 					}
 				}
 			}
@@ -188,6 +259,32 @@ func (r *Resolver) cleanExpiredEntries() {
 			r.log.WithField("hostname", hostname).Debug("Removed expired cache entry")
 		}
 	}
+}
+
+// ipsChanged compares two IP slices to detect changes
+func (r *Resolver) ipsChanged(oldIPs, newIPs []string) bool {
+	if len(oldIPs) != len(newIPs) {
+		return true
+	}
+
+	// Create maps for O(1) lookup
+	oldMap := make(map[string]bool)
+	for _, ip := range oldIPs {
+		oldMap[ip] = true
+	}
+
+	for _, ip := range newIPs {
+		if !oldMap[ip] {
+			return true
+		}
+	}
+
+	return false
+}
+
+// createJobKey creates a unique key for a resolution job
+func (r *Resolver) createJobKey(hostnames []string, interval time.Duration) string {
+	return fmt.Sprintf("%v:%v", hostnames, interval)
 }
 
 // cleanupLoop runs periodic cache cleanup

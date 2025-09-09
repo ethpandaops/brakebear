@@ -460,7 +460,7 @@ func (s *service) resolveDNSExclusions(ctx context.Context, limits *types.Networ
 	return nil
 }
 
-// startDNSResolutionForContainer starts periodic DNS resolution for DNS-based exclusions
+// startDNSResolutionForContainer starts periodic DNS resolution with change detection
 func (s *service) startDNSResolutionForContainer(ctx context.Context, limits *types.NetworkLimits) {
 	if limits == nil || len(limits.ExcludeNetworks) == 0 {
 		return
@@ -471,8 +471,58 @@ func (s *service) startDNSResolutionForContainer(ctx context.Context, limits *ty
 			s.log.WithFields(logrus.Fields{
 				"hostnames": exclude.DNSConfig.Names,
 				"interval":  exclude.DNSConfig.CheckInterval,
-			}).Info("Starting DNS resolution for exclusion")
-			s.dnsResolver.StartPeriodicResolution(ctx, exclude.DNSConfig.Names, exclude.DNSConfig.CheckInterval)
+			}).Info("Starting DNS resolution with change detection")
+
+			// Create DNS change callback
+			callback := s.createDNSChangeCallback()
+
+			// Start periodic resolution with callback
+			s.dnsResolver.StartPeriodicResolutionWithCallback(
+				ctx,
+				exclude.DNSConfig.Names,
+				exclude.DNSConfig.CheckInterval,
+				callback,
+			)
+		}
+	}
+}
+
+// createDNSChangeCallback creates a callback function for DNS change notifications
+func (s *service) createDNSChangeCallback() func(ctx context.Context, hostname string, oldIPs, newIPs []string) {
+	return func(ctx context.Context, hostname string, oldIPs, newIPs []string) {
+		s.log.WithFields(logrus.Fields{
+			"hostname": hostname,
+			"old_ips":  oldIPs,
+			"new_ips":  newIPs,
+		}).Info("DNS IP change detected, updating container exclusions")
+
+		// Find all containers that use this hostname
+		containerIDs := s.controller.GetContainersWithDNSHostname(hostname)
+		if len(containerIDs) == 0 {
+			s.log.WithField("hostname", hostname).Debug("No containers found using this DNS hostname")
+			return
+		}
+
+		s.log.WithFields(logrus.Fields{
+			"hostname":      hostname,
+			"container_ids": containerIDs,
+		}).Info("Updating DNS exclusions for containers")
+
+		// Update each container
+		for _, containerID := range containerIDs {
+			updateCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			if err := s.controller.UpdateDNSExclusions(updateCtx, containerID, hostname, oldIPs, newIPs); err != nil {
+				s.log.WithError(err).WithFields(logrus.Fields{
+					"container_id": containerID,
+					"hostname":     hostname,
+				}).Error("Failed to update DNS exclusions for container")
+			} else {
+				s.log.WithFields(logrus.Fields{
+					"container_id": containerID,
+					"hostname":     hostname,
+				}).Info("Successfully updated DNS exclusions for container")
+			}
+			cancel()
 		}
 	}
 }
