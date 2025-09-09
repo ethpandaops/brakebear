@@ -36,6 +36,22 @@ type ContainerConfig struct {
 	Jitter string `mapstructure:"jitter"`
 	// Loss specifies the packet loss percentage (e.g., "0.1%", "1%")
 	Loss string `mapstructure:"loss"`
+	// ExcludeNetworks specifies networks to exclude from traffic limiting
+	ExcludeNetworks []ExcludeNetwork `mapstructure:"exclude_networks"`
+}
+
+// ExcludeNetwork represents a network exclusion configuration
+type ExcludeNetwork struct {
+	// Type specifies the exclusion type (currently only "cidr" is supported)
+	Type string `mapstructure:"type"`
+	// CIDRConfig contains CIDR-specific configuration
+	CIDRConfig *CIDRConfig `mapstructure:"cidr_config"`
+}
+
+// CIDRConfig contains CIDR range configurations
+type CIDRConfig struct {
+	// Ranges specifies the CIDR ranges to exclude
+	Ranges []string `mapstructure:"ranges"`
 }
 
 // LoadConfig loads configuration from a YAML file using viper
@@ -127,6 +143,10 @@ func (c *ContainerConfig) ToNetworkLimits() (*types.NetworkLimits, error) {
 		return nil, err
 	}
 
+	if err := c.parseExcludeNetworks(limits); err != nil {
+		return nil, err
+	}
+
 	return limits, nil
 }
 
@@ -154,6 +174,29 @@ func (c *ContainerConfig) GetIdentifier() types.ContainerIdentifier {
 	// This should never happen if validation is done properly
 	logrus.Warn("Container configuration has no valid identifier")
 	return types.ContainerIdentifier{}
+}
+
+// GetExcludeNetworkRanges returns the list of CIDR ranges to exclude from traffic limiting
+func (c *ContainerConfig) GetExcludeNetworkRanges() ([]string, error) {
+	// Convert config.ExcludeNetwork to types.ExcludeNetwork
+	typesExcludes := make([]types.ExcludeNetwork, 0, len(c.ExcludeNetworks))
+	for _, exclude := range c.ExcludeNetworks {
+		typesExclude := types.ExcludeNetwork{
+			Type: exclude.Type,
+		}
+		if exclude.CIDRConfig != nil {
+			typesExclude.CIDRConfig = &types.CIDRConfig{
+				Ranges: exclude.CIDRConfig.Ranges,
+			}
+		}
+		typesExcludes = append(typesExcludes, typesExclude)
+	}
+
+	ranges, err := types.ParseExcludeNetworks(typesExcludes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse exclude networks: %w", err)
+	}
+	return ranges, nil
 }
 
 // validate validates a single container configuration
@@ -236,6 +279,38 @@ func (c *ContainerConfig) parseLoss(limits *types.NetworkLimits) error {
 	return nil
 }
 
+func (c *ContainerConfig) parseExcludeNetworks(limits *types.NetworkLimits) error {
+	if len(c.ExcludeNetworks) == 0 {
+		return nil
+	}
+
+	// Convert config.ExcludeNetwork to types.ExcludeNetwork
+	excludeNetworks := make([]types.ExcludeNetwork, 0, len(c.ExcludeNetworks))
+	for i, exclude := range c.ExcludeNetworks {
+		// Validate before converting
+		if err := validateExcludeNetwork(exclude, i); err != nil {
+			return fmt.Errorf("failed to parse exclude networks: %w", err)
+		}
+
+		// Convert to types.ExcludeNetwork
+		typesExclude := types.ExcludeNetwork{
+			Type: exclude.Type,
+		}
+
+		// Convert CIDRConfig if present
+		if exclude.CIDRConfig != nil {
+			typesExclude.CIDRConfig = &types.CIDRConfig{
+				Ranges: exclude.CIDRConfig.Ranges,
+			}
+		}
+
+		excludeNetworks = append(excludeNetworks, typesExclude)
+	}
+
+	limits.ExcludeNetworks = excludeNetworks
+	return nil
+}
+
 func (c *ContainerConfig) validateIdentifiers() error {
 	identifierCount := 0
 	if c.Name != "" {
@@ -268,6 +343,10 @@ func (c *ContainerConfig) validateNetworkParams() error {
 	}
 
 	if err := c.validateLossParam(); err != nil {
+		return err
+	}
+
+	if err := c.validateExcludeNetworks(); err != nil {
 		return err
 	}
 
@@ -310,6 +389,58 @@ func (c *ContainerConfig) validateLossParam() error {
 	if c.Loss != "" {
 		if _, err := types.ParseLoss(c.Loss); err != nil {
 			return fmt.Errorf("invalid loss: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// validateExcludeNetworks validates the exclude networks configuration
+func (c *ContainerConfig) validateExcludeNetworks() error {
+	for i, exclude := range c.ExcludeNetworks {
+		if err := validateExcludeNetwork(exclude, i); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateExcludeNetwork validates a single exclude network configuration
+func validateExcludeNetwork(exclude ExcludeNetwork, index int) error {
+	if exclude.Type == "" {
+		return fmt.Errorf("exclude network %d: type cannot be empty", index)
+	}
+
+	// Validate exclude network type
+	validTypes := []string{"cidr", "private-ranges"}
+	isValidType := false
+	for _, validType := range validTypes {
+		if exclude.Type == validType {
+			isValidType = true
+			break
+		}
+	}
+	if !isValidType {
+		return fmt.Errorf("exclude network %d: unsupported type '%s', supported types: %v", index, exclude.Type, validTypes)
+	}
+
+	// Type-specific validation
+	switch exclude.Type {
+	case "cidr":
+		if exclude.CIDRConfig == nil {
+			return fmt.Errorf("exclude network %d: cidr_config is required for type 'cidr'", index)
+		}
+		if len(exclude.CIDRConfig.Ranges) == 0 {
+			return fmt.Errorf("exclude network %d: cidr_config.ranges cannot be empty for type 'cidr'", index)
+		}
+		for j, cidr := range exclude.CIDRConfig.Ranges {
+			if err := types.ValidateCIDRRange(cidr); err != nil {
+				return fmt.Errorf("exclude network %d, CIDR range %d: %w", index, j, err)
+			}
+		}
+	case "private-ranges":
+		if exclude.CIDRConfig != nil {
+			return fmt.Errorf("exclude network %d: cidr_config should not be specified for type 'private-ranges'", index)
 		}
 	}
 

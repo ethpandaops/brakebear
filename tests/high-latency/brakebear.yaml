@@ -3,3 +3,7 @@ docker_containers:
 - name: "latency-high"
   latency: 500ms
   jitter: 50ms
+  download_rate: 10Mbps
+  upload_rate: 5Mbps
+  exclude_networks:
+    - type: "private-ranges"  # Excludes RFC1918 private networks by default

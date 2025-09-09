@@ -28,11 +28,12 @@ type ContainerIdentifier struct {
 
 // NetworkLimits represents network traffic control limits
 type NetworkLimits struct {
-	DownloadRate *Rate
-	UploadRate   *Rate
-	Latency      *Duration
-	Jitter       *Duration
-	Loss         *float64
+	DownloadRate    *Rate
+	UploadRate      *Rate
+	Latency         *Duration
+	Jitter          *Duration
+	Loss            *float64
+	ExcludeNetworks []ExcludeNetwork
 }
 
 // Rate represents a network rate with value and unit

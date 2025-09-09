@@ -22,3 +22,24 @@ docker_containers:
   latency: 500ms
   jitter: 50ms
   loss: 1%
+
+# Example with network exclusions
+- name: "test-with-exclusions"
+  download_rate: 1Mbps
+  upload_rate: 500kbps
+  latency: 50ms
+  jitter: 10ms
+  loss: 0.1%
+  exclude_networks:
+    - type: "cidr"
+      cidr_config:
+        ranges:
+          - "192.168.1.0/24"
+          - "10.0.0.0/8"
+
+# Example with private network exclusions (RFC1918)
+- name: "test-private-exclusions"
+  download_rate: 1Mbps
+  upload_rate: 500kbps
+  exclude_networks:
+    - type: "private-ranges"  # Automatically excludes 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16

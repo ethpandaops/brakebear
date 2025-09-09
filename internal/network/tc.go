@@ -109,6 +109,46 @@ func (t *TCManager) GetInterfaces() ([]string, error) {
 	return t.getInterfaces()
 }
 
+// generateExclusionFilters creates tc filter commands for excluded CIDR ranges
+// Uses smart filtering to avoid excluding the container's own traffic
+func (t *TCManager) generateExclusionFilters(ifaceName string, parent string, excludeRanges []string, isIngress bool) [][]string {
+	var filters [][]string
+
+	for _, cidr := range excludeRanges {
+		if isIngress {
+			// INGRESS (Download): Only exclude traffic FROM external sources in the CIDR range
+			// This allows responses from excluded networks to flow normally while
+			// preventing the container from being limited when talking to those networks
+			filters = append(filters, []string{
+				"tc", "filter", "add", "dev", ifaceName, "parent", parent,
+				"protocol", "ip", "prio", "1", "u32",
+				"match", "ip", "src", cidr, "flowid", "1:2",
+			})
+			t.log.WithFields(logrus.Fields{
+				"interface": ifaceName,
+				"cidr":      cidr,
+				"direction": "ingress",
+			}).Debug("Created ingress exclusion filter for external sources")
+		} else {
+			// EGRESS (Upload): Only exclude traffic TO destinations in the CIDR range
+			// This prevents applying latency to local network traffic while
+			// still applying limits to external traffic
+			filters = append(filters, []string{
+				"tc", "filter", "add", "dev", ifaceName, "parent", parent,
+				"protocol", "ip", "prio", "1", "u32",
+				"match", "ip", "dst", cidr, "flowid", "1:2",
+			})
+			t.log.WithFields(logrus.Fields{
+				"interface": ifaceName,
+				"cidr":      cidr,
+				"direction": "egress",
+			}).Debug("Created egress exclusion filter for local destinations")
+		}
+	}
+
+	return filters
+}
+
 // applyEgressLimits applies upload limits and latency/jitter/loss to egress traffic
 func (t *TCManager) applyEgressLimits(ifaceName string, limits *types.NetworkLimits, commands *[][]string) error {
 	// Determine the rate to use - if no upload limit, use a high default (10Gbps)
@@ -134,13 +174,19 @@ func (t *TCManager) applyEgressLimits(ifaceName string, limits *types.NetworkLim
 
 	// Create HTB root qdisc
 	*commands = append(*commands, []string{
-		"tc", "qdisc", "add", "dev", ifaceName, "root", "handle", "1:", "htb", "default", "30",
+		"tc", "qdisc", "add", "dev", ifaceName, "root", "handle", "1:", "htb", "default", "1",
 	})
 
-	// Create HTB class with the rate
+	// Create restricted HTB class 1:1 with the rate
 	*commands = append(*commands, []string{
 		"tc", "class", "add", "dev", ifaceName, "parent", "1:", "classid", "1:1", "htb",
 		"rate", rateStr, "ceil", rateStr,
+	})
+
+	// Create unrestricted class 1:2 for excluded networks
+	*commands = append(*commands, []string{
+		"tc", "class", "add", "dev", ifaceName, "parent", "1:", "classid", "1:2",
+		"htb", "rate", "10gbit", "ceil", "10gbit",
 	})
 
 	// Add netem as leaf qdisc if needed
@@ -167,9 +213,19 @@ func (t *TCManager) applyEgressLimits(ifaceName string, limits *types.NetworkLim
 		t.log.WithField("interface", ifaceName).Debug("Added netem for egress latency/jitter/loss")
 	}
 
-	// Add filter to direct traffic to our class
+	// Process excluded networks
+	excludeRanges, err := types.ParseExcludeNetworks(limits.ExcludeNetworks)
+	if err != nil {
+		return fmt.Errorf("failed to parse exclude networks: %w", err)
+	}
+
+	// Add exclusion filters with priority 1
+	exclusionFilters := t.generateExclusionFilters(ifaceName, "1:", excludeRanges, false)
+	*commands = append(*commands, exclusionFilters...)
+
+	// Add catch-all filter with priority 2 for restricted traffic
 	*commands = append(*commands, []string{
-		"tc", "filter", "add", "dev", ifaceName, "parent", "1:", "protocol", "all", "prio", "1", "u32",
+		"tc", "filter", "add", "dev", ifaceName, "parent", "1:", "protocol", "all", "prio", "2", "u32",
 		"match", "u32", "0", "0", "flowid", "1:1",
 	})
 
@@ -205,13 +261,19 @@ func (t *TCManager) applyIngressLimits(ifaceName string, limits *types.NetworkLi
 
 	// Add HTB qdisc to IFB interface
 	*commands = append(*commands, []string{
-		"tc", "qdisc", "add", "dev", ifbInterface, "root", "handle", "1:", "htb", "default", "30",
+		"tc", "qdisc", "add", "dev", ifbInterface, "root", "handle", "1:", "htb", "default", "1",
 	})
 
-	// Create HTB class with the rate
+	// Create restricted HTB class 1:1 with the rate
 	*commands = append(*commands, []string{
 		"tc", "class", "add", "dev", ifbInterface, "parent", "1:", "classid", "1:1", "htb",
 		"rate", rateStr, "ceil", rateStr,
+	})
+
+	// Create unrestricted class 1:2 for excluded networks
+	*commands = append(*commands, []string{
+		"tc", "class", "add", "dev", ifbInterface, "parent", "1:", "classid", "1:2",
+		"htb", "rate", "10gbit", "ceil", "10gbit",
 	})
 
 	// Add netem as leaf qdisc if needed
@@ -238,9 +300,19 @@ func (t *TCManager) applyIngressLimits(ifaceName string, limits *types.NetworkLi
 		t.log.WithField("ifb_interface", ifbInterface).Debug("Added netem for ingress latency/jitter/loss")
 	}
 
-	// Add filter to direct traffic to our class
+	// Process excluded networks
+	excludeRanges, err := types.ParseExcludeNetworks(limits.ExcludeNetworks)
+	if err != nil {
+		return fmt.Errorf("failed to parse exclude networks: %w", err)
+	}
+
+	// Add exclusion filters for IFB with priority 1
+	exclusionFilters := t.generateExclusionFilters(ifbInterface, "1:", excludeRanges, true)
+	*commands = append(*commands, exclusionFilters...)
+
+	// Add catch-all filter with priority 2 for restricted traffic
 	*commands = append(*commands, []string{
-		"tc", "filter", "add", "dev", ifbInterface, "parent", "1:", "protocol", "all", "prio", "1", "u32",
+		"tc", "filter", "add", "dev", ifbInterface, "parent", "1:", "protocol", "all", "prio", "2", "u32",
 		"match", "u32", "0", "0", "flowid", "1:1",
 	})
 
