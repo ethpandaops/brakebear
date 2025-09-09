@@ -148,11 +148,13 @@ func (t *TCManager) applyEgressLimits(ifaceName string, limits *types.NetworkLim
 		netemCmd := []string{"tc", "qdisc", "add", "dev", ifaceName, "parent", "1:1", "handle", "10:", "netem"}
 
 		if limits.Latency != nil {
-			latencyMs := limits.Latency.ToNanoseconds() / 1000000
+			// Halve the latency since it applies to both egress and ingress (total RTT = 2x one-way)
+			latencyMs := (limits.Latency.ToNanoseconds() / 1000000) / 2
 			netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
 
 			if limits.Jitter != nil {
-				jitterMs := limits.Jitter.ToNanoseconds() / 1000000
+				// Halve jitter as well to maintain proportion with latency
+				jitterMs := (limits.Jitter.ToNanoseconds() / 1000000) / 2
 				netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
 			}
 		}
@@ -217,11 +219,13 @@ func (t *TCManager) applyIngressLimits(ifaceName string, limits *types.NetworkLi
 		netemCmd := []string{"tc", "qdisc", "add", "dev", ifbInterface, "parent", "1:1", "handle", "10:", "netem"}
 
 		if limits.Latency != nil {
-			latencyMs := limits.Latency.ToNanoseconds() / 1000000
+			// Halve the latency since it applies to both egress and ingress (total RTT = 2x one-way)
+			latencyMs := (limits.Latency.ToNanoseconds() / 1000000) / 2
 			netemCmd = append(netemCmd, "delay", fmt.Sprintf("%dms", latencyMs))
 
 			if limits.Jitter != nil {
-				jitterMs := limits.Jitter.ToNanoseconds() / 1000000
+				// Halve jitter as well to maintain proportion with latency
+				jitterMs := (limits.Jitter.ToNanoseconds() / 1000000) / 2
 				netemCmd = append(netemCmd, fmt.Sprintf("%dms", jitterMs))
 			}
 		}
