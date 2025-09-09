@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -149,6 +150,73 @@ func (t *TCManager) generateExclusionFilters(ifaceName string, parent string, ex
 	return filters
 }
 
+// generatePortExclusionFilters creates tc filter commands for excluded ports
+func (t *TCManager) generatePortExclusionFilters(ifaceName string, parent string, portConfig *types.PortConfig, isIngress bool) [][]string {
+	if portConfig == nil {
+		return nil
+	}
+
+	// Parse port configuration
+	portSpecs, err := types.ParsePortConfig(portConfig)
+	if err != nil {
+		t.log.WithFields(logrus.Fields{
+			"interface": ifaceName,
+			"error":     err,
+		}).Error("Failed to parse port configuration")
+		return nil
+	}
+
+	// Pre-allocate filters slice
+	filters := make([][]string, 0, len(portSpecs))
+
+	// Generate filters for each port specification
+	for _, spec := range portSpecs {
+		var protocolNum string
+		var portField string
+
+		// Set protocol number and port field based on protocol
+		switch spec.Protocol {
+		case "tcp":
+			protocolNum = "6"
+		case "udp":
+			protocolNum = "17"
+		default:
+			continue // Skip invalid protocols
+		}
+
+		if isIngress {
+			// INGRESS (Download): Match source ports for incoming traffic
+			portField = "sport"
+			t.log.WithFields(logrus.Fields{
+				"interface": ifaceName,
+				"protocol":  spec.Protocol,
+				"port":      spec.Port,
+				"direction": "ingress",
+			}).Debug("Creating ingress port exclusion filter")
+		} else {
+			// EGRESS (Upload): Match destination ports for outgoing traffic
+			portField = "dport"
+			t.log.WithFields(logrus.Fields{
+				"interface": ifaceName,
+				"protocol":  spec.Protocol,
+				"port":      spec.Port,
+				"direction": "egress",
+			}).Debug("Creating egress port exclusion filter")
+		}
+
+		// Create the tc filter command
+		filters = append(filters, []string{
+			"tc", "filter", "add", "dev", ifaceName, "parent", parent,
+			"protocol", "ip", "prio", "1", "u32",
+			"match", "ip", "protocol", protocolNum, "0xff",
+			"match", "ip", portField, strconv.Itoa(spec.Port), "0xffff",
+			"flowid", "1:2", // unrestricted class
+		})
+	}
+
+	return filters
+}
+
 // applyEgressLimits applies upload limits and latency/jitter/loss to egress traffic
 func (t *TCManager) applyEgressLimits(ifaceName string, limits *types.NetworkLimits, commands *[][]string) error {
 	// Determine the rate to use - if no upload limit, use a high default (10Gbps)
@@ -221,9 +289,17 @@ func (t *TCManager) applyEgressLimits(ifaceName string, limits *types.NetworkLim
 		return fmt.Errorf("failed to parse exclude networks: %w", err)
 	}
 
-	// Add exclusion filters with priority 1
+	// Add CIDR exclusion filters with priority 1
 	exclusionFilters := t.generateExclusionFilters(ifaceName, "1:", excludeRanges, false)
 	*commands = append(*commands, exclusionFilters...)
+
+	// Add port exclusion filters with priority 1
+	for _, exclude := range limits.ExcludeNetworks {
+		if exclude.Type == "ports" && exclude.PortConfig != nil {
+			portFilters := t.generatePortExclusionFilters(ifaceName, "1:", exclude.PortConfig, false)
+			*commands = append(*commands, portFilters...)
+		}
+	}
 
 	// Add catch-all filter with priority 2 for restricted traffic
 	*commands = append(*commands, []string{
@@ -310,9 +386,17 @@ func (t *TCManager) applyIngressLimits(ifaceName string, limits *types.NetworkLi
 		return fmt.Errorf("failed to parse exclude networks: %w", err)
 	}
 
-	// Add exclusion filters for IFB with priority 1
+	// Add CIDR exclusion filters for IFB with priority 1
 	exclusionFilters := t.generateExclusionFilters(ifbInterface, "1:", excludeRanges, true)
 	*commands = append(*commands, exclusionFilters...)
+
+	// Add port exclusion filters for IFB with priority 1
+	for _, exclude := range limits.ExcludeNetworks {
+		if exclude.Type == "ports" && exclude.PortConfig != nil {
+			portFilters := t.generatePortExclusionFilters(ifbInterface, "1:", exclude.PortConfig, true)
+			*commands = append(*commands, portFilters...)
+		}
+	}
 
 	// Add catch-all filter with priority 2 for restricted traffic
 	*commands = append(*commands, []string{

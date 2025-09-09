@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -14,6 +15,7 @@ type ExcludeNetwork struct {
 	Type       string
 	CIDRConfig *CIDRConfig
 	DNSConfig  *DNSConfig
+	PortConfig *PortConfig
 }
 
 // CIDRConfig contains CIDR range configurations
@@ -25,6 +27,25 @@ type CIDRConfig struct {
 type DNSConfig struct {
 	Names         []string      // List of hostnames to resolve
 	CheckInterval time.Duration // How often to check DNS for changes
+}
+
+// PortConfig contains port exclusion configuration
+type PortConfig struct {
+	TCP  []string `json:"tcp,omitempty"`
+	UDP  []string `json:"udp,omitempty"`
+	Both []string `json:"both,omitempty"`
+}
+
+// PortRange represents a range of ports
+type PortRange struct {
+	Start int
+	End   int
+}
+
+// PortSpec represents a single port specification
+type PortSpec struct {
+	Port     int
+	Protocol string // "tcp", "udp", or "both"
 }
 
 // DNSResolver interface for DNS resolution operations
@@ -88,9 +109,12 @@ func processExclude(exclude ExcludeNetwork, resolver DNSResolver) ([]string, err
 		return GetDefaultPrivateRanges(), nil
 	case "dns":
 		return processDNSExclude(exclude.DNSConfig, resolver)
+	case "ports":
+		// Port exclusions don't return CIDR ranges - they're handled separately in TC layer
+		return nil, nil
 	default:
 		if exclude.Type != "" {
-			return nil, fmt.Errorf("unsupported exclude network type '%s', supported types: 'cidr', 'private-ranges', 'dns'", exclude.Type)
+			return nil, fmt.Errorf("unsupported exclude network type '%s', supported types: 'cidr', 'private-ranges', 'dns', 'ports'", exclude.Type)
 		}
 		return nil, nil
 	}
@@ -145,4 +169,128 @@ func convertIPToCIDR(ip string) string {
 		return ip + "/32" // IPv4 address
 	}
 	return "" // Skip IPv6 addresses for now
+}
+
+// ParsePortConfig parses a PortConfig into a list of PortSpec entries
+func ParsePortConfig(config *PortConfig) ([]PortSpec, error) {
+	if config == nil {
+		return nil, nil
+	}
+
+	var specs []PortSpec
+
+	// Parse TCP ports
+	for _, portStr := range config.TCP {
+		portRanges, err := ParsePortString(portStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid TCP port specification '%s': %w", portStr, err)
+		}
+		for _, portRange := range portRanges {
+			for port := portRange.Start; port <= portRange.End; port++ {
+				specs = append(specs, PortSpec{Port: port, Protocol: "tcp"})
+			}
+		}
+	}
+
+	// Parse UDP ports
+	for _, portStr := range config.UDP {
+		portRanges, err := ParsePortString(portStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid UDP port specification '%s': %w", portStr, err)
+		}
+		for _, portRange := range portRanges {
+			for port := portRange.Start; port <= portRange.End; port++ {
+				specs = append(specs, PortSpec{Port: port, Protocol: "udp"})
+			}
+		}
+	}
+
+	// Parse Both protocols ports
+	for _, portStr := range config.Both {
+		portRanges, err := ParsePortString(portStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Both port specification '%s': %w", portStr, err)
+		}
+		for _, portRange := range portRanges {
+			for port := portRange.Start; port <= portRange.End; port++ {
+				specs = append(specs, PortSpec{Port: port, Protocol: "tcp"})
+				specs = append(specs, PortSpec{Port: port, Protocol: "udp"})
+			}
+		}
+	}
+
+	return specs, nil
+}
+
+// ParsePortString parses a port string into PortRange entries
+// Supports formats: "80", "80-90", "80,443,8080", "8000-9000,3000,4000-4010"
+func ParsePortString(portStr string) ([]PortRange, error) {
+	portStr = strings.TrimSpace(portStr)
+	if portStr == "" {
+		return nil, errors.New("port string cannot be empty")
+	}
+
+	var ranges []PortRange
+
+	// Split by commas to handle multiple ports/ranges
+	parts := strings.Split(portStr, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		// Check if it's a range (contains dash)
+		if strings.Contains(part, "-") {
+			rangeParts := strings.Split(part, "-")
+			if len(rangeParts) != 2 {
+				return nil, fmt.Errorf("invalid port range format '%s', expected 'start-end'", part)
+			}
+
+			start, err := strconv.Atoi(strings.TrimSpace(rangeParts[0]))
+			if err != nil {
+				return nil, fmt.Errorf("invalid start port '%s': %w", rangeParts[0], err)
+			}
+
+			end, err := strconv.Atoi(strings.TrimSpace(rangeParts[1]))
+			if err != nil {
+				return nil, fmt.Errorf("invalid end port '%s': %w", rangeParts[1], err)
+			}
+
+			if err := ValidatePortRange(start); err != nil {
+				return nil, fmt.Errorf("invalid start port %d: %w", start, err)
+			}
+			if err := ValidatePortRange(end); err != nil {
+				return nil, fmt.Errorf("invalid end port %d: %w", end, err)
+			}
+
+			if start > end {
+				return nil, fmt.Errorf("start port %d cannot be greater than end port %d", start, end)
+			}
+
+			ranges = append(ranges, PortRange{Start: start, End: end})
+		} else {
+			// Single port
+			port, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, fmt.Errorf("invalid port '%s': %w", part, err)
+			}
+
+			if err := ValidatePortRange(port); err != nil {
+				return nil, fmt.Errorf("invalid port %d: %w", port, err)
+			}
+
+			ranges = append(ranges, PortRange{Start: port, End: port})
+		}
+	}
+
+	return ranges, nil
+}
+
+// ValidatePortRange validates that a port number is in valid range (1-65535)
+func ValidatePortRange(port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("port %d is out of valid range (1-65535)", port)
+	}
+	return nil
 }

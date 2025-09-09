@@ -58,3 +58,12 @@ docker_containers:
           - "registry.npmjs.org"
           - "cdn.jsdelivr.net"
         check_interval: "10m"
+
+# Example with port exclusions
+- name: "test-port-exclusions"
+  download_rate: 1Mbps
+  upload_rate: 500kbps
+  exclude_networks:
+    - type: "ports"
+      port_config:
+        tcp: ["80", "443"]
