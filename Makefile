@@ -235,7 +235,7 @@ docker-run:
 		--privileged \
 		--network host \
 		--pid host \
-		-v /var/run/docker.sock:/var/run/docker.sock \
+		-v /var/run/docker.sock:/var/run/docker.sock:ro \
 		-v $(PWD)/tests:/etc/brakebear/examples:ro \
 		--entrypoint "sh" \
 		$(DOCKER_IMAGE_NAME):$(DOCKER_TAG)

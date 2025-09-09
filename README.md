@@ -40,8 +40,8 @@ docker run --rm -it \
   --network host \
   --pid host \
   --name brakebear \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v $(pwd)/brakebear.yaml:/etc/brakebear/brakebear.yaml \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -v $(pwd)/brakebear.yaml:/etc/brakebear/brakebear.yaml:ro \
   ghcr.io/ethpandaops/brakebear:master
 ```
 > **Note**: The `--privileged`, `--network host`, and `--pid host` flags are required for BrakeBear to access container network namespaces and apply traffic control rules.
