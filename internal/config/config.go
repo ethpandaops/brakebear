@@ -37,20 +37,20 @@ type ContainerConfig struct {
 	Jitter string `mapstructure:"jitter"`
 	// Loss specifies the packet loss percentage (e.g., "0.1%", "1%")
 	Loss string `mapstructure:"loss"`
-	// ExcludeNetworks specifies networks to exclude from traffic limiting
-	ExcludeNetworks []ExcludeNetwork `mapstructure:"exclude_networks"`
+	// Exclusions specifies networks to exclude from traffic limiting
+	Exclusions *ExclusionsConfig `mapstructure:"exclusions"`
 }
 
-// ExcludeNetwork represents a network exclusion configuration
-type ExcludeNetwork struct {
-	// Type specifies the exclusion type (cidr, private-ranges, dns, ports)
-	Type string `mapstructure:"type"`
-	// CIDRConfig contains CIDR-specific configuration
-	CIDRConfig *CIDRConfig `mapstructure:"cidr_config"`
-	// DNSConfig contains DNS-specific configuration
-	DNSConfig *DNSConfig `mapstructure:"dns_config"`
-	// PortConfig contains port-specific configuration
-	PortConfig *PortConfig `mapstructure:"port_config"`
+// ExclusionsConfig represents the new object-based exclusion configuration
+type ExclusionsConfig struct {
+	// CIDR contains CIDR-specific configuration
+	CIDR *CIDRConfig `mapstructure:"cidr"`
+	// DNS contains DNS-specific configuration
+	DNS *DNSConfig `mapstructure:"dns"`
+	// Ports contains port-specific configuration
+	Ports *PortConfig `mapstructure:"ports"`
+	// PrivateNetworks enables RFC1918 private network exclusions
+	PrivateNetworks *bool `mapstructure:"private-networks"`
 }
 
 // CIDRConfig contains CIDR range configurations
@@ -73,8 +73,6 @@ type PortConfig struct {
 	TCP []string `mapstructure:"tcp"`
 	// UDP specifies UDP ports to exclude (e.g., ["53", "5353"])
 	UDP []string `mapstructure:"udp"`
-	// Both specifies ports to exclude for both TCP and UDP (e.g., ["22"])
-	Both []string `mapstructure:"both"`
 }
 
 // LoadConfig loads configuration from a YAML file using viper
@@ -166,7 +164,7 @@ func (c *ContainerConfig) ToNetworkLimits() (*types.NetworkLimits, error) {
 		return nil, err
 	}
 
-	if err := c.parseExcludeNetworks(limits); err != nil {
+	if err := c.parseExclusionsConfig(limits); err != nil {
 		return nil, err
 	}
 
@@ -201,36 +199,51 @@ func (c *ContainerConfig) GetIdentifier() types.ContainerIdentifier {
 
 // GetExcludeNetworkRanges returns the list of CIDR ranges to exclude from traffic limiting
 func (c *ContainerConfig) GetExcludeNetworkRanges() ([]string, error) {
-	// Convert config.ExcludeNetwork to types.ExcludeNetwork
-	typesExcludes := make([]types.ExcludeNetwork, 0, len(c.ExcludeNetworks))
-	for _, exclude := range c.ExcludeNetworks {
-		typesExclude := types.ExcludeNetwork{
-			Type: exclude.Type,
+	if c.Exclusions == nil {
+		return nil, nil
+	}
+
+	// Convert ExclusionsConfig to types.ExcludeNetwork for processing
+	var typesExcludes []types.ExcludeNetwork
+
+	// Add private networks if enabled
+	if c.Exclusions.PrivateNetworks != nil && *c.Exclusions.PrivateNetworks {
+		typesExcludes = append(typesExcludes, types.ExcludeNetwork{Type: "private-networks"})
+	}
+
+	// Add CIDR exclusions
+	if c.Exclusions.CIDR != nil {
+		typesExcludes = append(typesExcludes, types.ExcludeNetwork{
+			Type:       "cidr",
+			CIDRConfig: &types.CIDRConfig{Ranges: c.Exclusions.CIDR.Ranges},
+		})
+	}
+
+	// Add DNS exclusions
+	if c.Exclusions.DNS != nil {
+		interval, err := time.ParseDuration(c.Exclusions.DNS.CheckInterval)
+		if err != nil {
+			// Default to 5 minutes if parsing fails
+			interval = 5 * time.Minute
 		}
-		if exclude.CIDRConfig != nil {
-			typesExclude.CIDRConfig = &types.CIDRConfig{
-				Ranges: exclude.CIDRConfig.Ranges,
-			}
-		}
-		if exclude.DNSConfig != nil {
-			interval, err := time.ParseDuration(exclude.DNSConfig.CheckInterval)
-			if err != nil {
-				// Default to 5 minutes if parsing fails
-				interval = 5 * time.Minute
-			}
-			typesExclude.DNSConfig = &types.DNSConfig{
-				Names:         exclude.DNSConfig.Names,
+		typesExcludes = append(typesExcludes, types.ExcludeNetwork{
+			Type: "dns",
+			DNSConfig: &types.DNSConfig{
+				Names:         c.Exclusions.DNS.Names,
 				CheckInterval: interval,
-			}
-		}
-		if exclude.PortConfig != nil {
-			typesExclude.PortConfig = &types.PortConfig{
-				TCP:  exclude.PortConfig.TCP,
-				UDP:  exclude.PortConfig.UDP,
-				Both: exclude.PortConfig.Both,
-			}
-		}
-		typesExcludes = append(typesExcludes, typesExclude)
+			},
+		})
+	}
+
+	// Add port exclusions
+	if c.Exclusions.Ports != nil {
+		typesExcludes = append(typesExcludes, types.ExcludeNetwork{
+			Type: "ports",
+			PortConfig: &types.PortConfig{
+				TCP: c.Exclusions.Ports.TCP,
+				UDP: c.Exclusions.Ports.UDP,
+			},
+		})
 	}
 
 	// Note: DNS resolver not available at config parsing time, pass nil for now
@@ -322,54 +335,57 @@ func (c *ContainerConfig) parseLoss(limits *types.NetworkLimits) error {
 	return nil
 }
 
-func (c *ContainerConfig) parseExcludeNetworks(limits *types.NetworkLimits) error {
-	if len(c.ExcludeNetworks) == 0 {
+func (c *ContainerConfig) parseExclusionsConfig(limits *types.NetworkLimits) error {
+	if c.Exclusions == nil {
 		return nil
 	}
 
-	// Convert config.ExcludeNetwork to types.ExcludeNetwork
-	excludeNetworks := make([]types.ExcludeNetwork, 0, len(c.ExcludeNetworks))
-	for i, exclude := range c.ExcludeNetworks {
-		// Validate before converting
-		if err := validateExcludeNetwork(exclude, i); err != nil {
-			return fmt.Errorf("failed to parse exclude networks: %w", err)
-		}
+	// Validate exclusions config first
+	if err := validateExclusionsConfig(c.Exclusions); err != nil {
+		return fmt.Errorf("failed to validate exclusions config: %w", err)
+	}
 
-		// Convert to types.ExcludeNetwork
-		typesExclude := types.ExcludeNetwork{
-			Type: exclude.Type,
-		}
+	// Convert ExclusionsConfig to []types.ExcludeNetwork for backward compatibility
+	var excludeNetworks []types.ExcludeNetwork
 
-		// Convert CIDRConfig if present
-		if exclude.CIDRConfig != nil {
-			typesExclude.CIDRConfig = &types.CIDRConfig{
-				Ranges: exclude.CIDRConfig.Ranges,
-			}
-		}
+	// Add private networks if enabled
+	if c.Exclusions.PrivateNetworks != nil && *c.Exclusions.PrivateNetworks {
+		excludeNetworks = append(excludeNetworks, types.ExcludeNetwork{Type: "private-networks"})
+	}
 
-		// Convert DNSConfig if present
-		if exclude.DNSConfig != nil {
-			interval, err := time.ParseDuration(exclude.DNSConfig.CheckInterval)
-			if err != nil {
-				// Default to 5 minutes if parsing fails
-				interval = 5 * time.Minute
-			}
-			typesExclude.DNSConfig = &types.DNSConfig{
-				Names:         exclude.DNSConfig.Names,
+	// Add CIDR exclusions
+	if c.Exclusions.CIDR != nil {
+		excludeNetworks = append(excludeNetworks, types.ExcludeNetwork{
+			Type:       "cidr",
+			CIDRConfig: &types.CIDRConfig{Ranges: c.Exclusions.CIDR.Ranges},
+		})
+	}
+
+	// Add DNS exclusions
+	if c.Exclusions.DNS != nil {
+		interval, err := time.ParseDuration(c.Exclusions.DNS.CheckInterval)
+		if err != nil {
+			// Default to 5 minutes if parsing fails
+			interval = 5 * time.Minute
+		}
+		excludeNetworks = append(excludeNetworks, types.ExcludeNetwork{
+			Type: "dns",
+			DNSConfig: &types.DNSConfig{
+				Names:         c.Exclusions.DNS.Names,
 				CheckInterval: interval,
-			}
-		}
+			},
+		})
+	}
 
-		// Convert PortConfig if present
-		if exclude.PortConfig != nil {
-			typesExclude.PortConfig = &types.PortConfig{
-				TCP:  exclude.PortConfig.TCP,
-				UDP:  exclude.PortConfig.UDP,
-				Both: exclude.PortConfig.Both,
-			}
-		}
-
-		excludeNetworks = append(excludeNetworks, typesExclude)
+	// Add port exclusions
+	if c.Exclusions.Ports != nil {
+		excludeNetworks = append(excludeNetworks, types.ExcludeNetwork{
+			Type: "ports",
+			PortConfig: &types.PortConfig{
+				TCP: c.Exclusions.Ports.TCP,
+				UDP: c.Exclusions.Ports.UDP,
+			},
+		})
 	}
 
 	limits.ExcludeNetworks = excludeNetworks
@@ -411,7 +427,7 @@ func (c *ContainerConfig) validateNetworkParams() error {
 		return err
 	}
 
-	if err := c.validateExcludeNetworks(); err != nil {
+	if err := c.validateExclusionsConfig(); err != nil {
 		return err
 	}
 
@@ -460,68 +476,59 @@ func (c *ContainerConfig) validateLossParam() error {
 	return nil
 }
 
-// validateExcludeNetworks validates the exclude networks configuration
-func (c *ContainerConfig) validateExcludeNetworks() error {
-	for i, exclude := range c.ExcludeNetworks {
-		if err := validateExcludeNetwork(exclude, i); err != nil {
+// validateExclusionsConfig validates the exclusions configuration
+func (c *ContainerConfig) validateExclusionsConfig() error {
+	if c.Exclusions == nil {
+		return nil
+	}
+
+	return validateExclusionsConfig(c.Exclusions)
+}
+
+// validateExclusionsConfig validates a single exclusions configuration
+func validateExclusionsConfig(exclusions *ExclusionsConfig) error {
+	if exclusions == nil {
+		return nil
+	}
+
+	// Validate CIDR configuration
+	if exclusions.CIDR != nil {
+		if err := validateCIDRConfig(exclusions.CIDR, "cidr"); err != nil {
 			return err
 		}
 	}
+
+	// Validate DNS configuration
+	if exclusions.DNS != nil {
+		if err := validateDNSConfig(exclusions.DNS, "dns"); err != nil {
+			return err
+		}
+	}
+
+	// Validate port configuration
+	if exclusions.Ports != nil {
+		if err := validatePortConfig(exclusions.Ports, "ports"); err != nil {
+			return err
+		}
+	}
+
+	// Private networks is just a boolean, no validation needed beyond type checking
+
 	return nil
 }
 
-// validateExcludeNetwork validates a single exclude network configuration
-func validateExcludeNetwork(exclude ExcludeNetwork, index int) error {
-	if exclude.Type == "" {
-		return fmt.Errorf("exclude network %d: type cannot be empty", index)
-	}
-
-	if err := validateExcludeNetworkType(exclude.Type, index); err != nil {
-		return err
-	}
-
-	return validateExcludeNetworkConfig(exclude, index)
-}
-
-// validateExcludeNetworkType validates the exclude network type
-func validateExcludeNetworkType(excludeType string, index int) error {
-	validTypes := []string{"cidr", "private-ranges", "dns", "ports"}
-	for _, validType := range validTypes {
-		if excludeType == validType {
-			return nil
-		}
-	}
-	return fmt.Errorf("exclude network %d: unsupported type '%s', supported types: %v", index, excludeType, validTypes)
-}
-
-// validateExcludeNetworkConfig validates type-specific configuration
-func validateExcludeNetworkConfig(exclude ExcludeNetwork, index int) error {
-	switch exclude.Type {
-	case "cidr":
-		return validateCIDRExcludeConfig(exclude.CIDRConfig, index)
-	case "private-ranges":
-		return validatePrivateRangesConfig(exclude.CIDRConfig, index)
-	case "dns":
-		return validateDNSExcludeConfig(exclude.DNSConfig, index)
-	case "ports":
-		return validatePortExcludeConfig(exclude.PortConfig, index)
-	default:
-		return nil
-	}
-}
-
-// validateCIDRExcludeConfig validates CIDR exclusion configuration
-func validateCIDRExcludeConfig(config *CIDRConfig, index int) error {
+// validateCIDRConfig validates CIDR exclusion configuration
+func validateCIDRConfig(config *CIDRConfig, context string) error {
 	if config == nil {
-		return fmt.Errorf("exclude network %d: cidr_config is required for type 'cidr'", index)
+		return fmt.Errorf("%s: configuration is required", context)
 	}
 	if len(config.Ranges) == 0 {
-		return fmt.Errorf("exclude network %d: cidr_config.ranges cannot be empty for type 'cidr'", index)
+		return fmt.Errorf("%s: ranges cannot be empty", context)
 	}
 
 	for j, cidr := range config.Ranges {
 		if err := types.ValidateCIDRRange(cidr); err != nil {
-			return fmt.Errorf("exclude network %d, CIDR range %d: %w", index, j, err)
+			return fmt.Errorf("%s, CIDR range %d: %w", context, j, err)
 		}
 	}
 	return nil
@@ -535,7 +542,23 @@ func validatePrivateRangesConfig(config *CIDRConfig, index int) error {
 	return nil
 }
 
-// validateDNSExcludeConfig validates DNS exclusion configuration
+// validateDNSConfig validates DNS exclusion configuration
+func validateDNSConfig(config *DNSConfig, context string) error {
+	if config == nil {
+		return fmt.Errorf("%s: configuration is required", context)
+	}
+	if len(config.Names) == 0 {
+		return fmt.Errorf("%s: names cannot be empty", context)
+	}
+
+	if err := validateDNSCheckIntervalForConfig(config, context); err != nil {
+		return err
+	}
+
+	return validateDNSHostnamesForConfig(config.Names, context)
+}
+
+// validateDNSExcludeConfig validates DNS exclusion configuration (legacy)
 func validateDNSExcludeConfig(config *DNSConfig, index int) error {
 	if config == nil {
 		return fmt.Errorf("exclude network %d: dns_config is required for type 'dns'", index)
@@ -551,7 +574,20 @@ func validateDNSExcludeConfig(config *DNSConfig, index int) error {
 	return validateDNSHostnames(config.Names, index)
 }
 
-// validateDNSCheckInterval validates the DNS check interval
+// validateDNSCheckIntervalForConfig validates the DNS check interval for new config structure
+func validateDNSCheckIntervalForConfig(config *DNSConfig, context string) error {
+	if config.CheckInterval == "" {
+		config.CheckInterval = "5m" // Default to 5 minutes
+		return nil
+	}
+
+	if _, err := time.ParseDuration(config.CheckInterval); err != nil {
+		return fmt.Errorf("%s: invalid check_interval '%s': %w", context, config.CheckInterval, err)
+	}
+	return nil
+}
+
+// validateDNSCheckInterval validates the DNS check interval (legacy)
 func validateDNSCheckInterval(config *DNSConfig, index int) error {
 	if config.CheckInterval == "" {
 		config.CheckInterval = "5m" // Default to 5 minutes
@@ -564,7 +600,17 @@ func validateDNSCheckInterval(config *DNSConfig, index int) error {
 	return nil
 }
 
-// validateDNSHostnames validates the DNS hostnames
+// validateDNSHostnamesForConfig validates the DNS hostnames for new config structure
+func validateDNSHostnamesForConfig(hostnames []string, context string) error {
+	for j, hostname := range hostnames {
+		if hostname == "" {
+			return fmt.Errorf("%s, hostname %d: hostname cannot be empty", context, j)
+		}
+	}
+	return nil
+}
+
+// validateDNSHostnames validates the DNS hostnames (legacy)
 func validateDNSHostnames(hostnames []string, index int) error {
 	for j, hostname := range hostnames {
 		if hostname == "" {
@@ -574,34 +620,27 @@ func validateDNSHostnames(hostnames []string, index int) error {
 	return nil
 }
 
-// validatePortExcludeConfig validates port exclusion configuration
-func validatePortExcludeConfig(config *PortConfig, index int) error {
+// validatePortConfig validates port exclusion configuration
+func validatePortConfig(config *PortConfig, context string) error {
 	if config == nil {
-		return fmt.Errorf("exclude network %d: port_config is required for type 'ports'", index)
+		return fmt.Errorf("%s: configuration is required", context)
 	}
 
 	// Ensure at least one port specification is provided
-	if len(config.TCP) == 0 && len(config.UDP) == 0 && len(config.Both) == 0 {
-		return fmt.Errorf("exclude network %d: port_config must specify at least one of tcp, udp, or both", index)
+	if len(config.TCP) == 0 && len(config.UDP) == 0 {
+		return fmt.Errorf("%s: must specify at least one of tcp or udp", context)
 	}
 
 	// Validate TCP ports
 	for j, portStr := range config.TCP {
-		if err := validatePortString(portStr, "tcp", index, j); err != nil {
+		if err := validatePortStringForConfig(portStr, "tcp", context, j); err != nil {
 			return err
 		}
 	}
 
 	// Validate UDP ports
 	for j, portStr := range config.UDP {
-		if err := validatePortString(portStr, "udp", index, j); err != nil {
-			return err
-		}
-	}
-
-	// Validate Both ports
-	for j, portStr := range config.Both {
-		if err := validatePortString(portStr, "both", index, j); err != nil {
+		if err := validatePortStringForConfig(portStr, "udp", context, j); err != nil {
 			return err
 		}
 	}
@@ -609,16 +648,16 @@ func validatePortExcludeConfig(config *PortConfig, index int) error {
 	return nil
 }
 
-// validatePortString validates a single port string specification
-func validatePortString(portStr, protocol string, excludeIndex, portIndex int) error {
+// validatePortStringForConfig validates a single port string specification for new config structure
+func validatePortStringForConfig(portStr, protocol, context string, portIndex int) error {
 	if portStr == "" {
-		return fmt.Errorf("exclude network %d, %s port %d: port string cannot be empty", excludeIndex, protocol, portIndex)
+		return fmt.Errorf("%s, %s port %d: port string cannot be empty", context, protocol, portIndex)
 	}
 
 	// Use the types package to validate the port string
 	_, err := types.ParsePortString(portStr)
 	if err != nil {
-		return fmt.Errorf("exclude network %d, %s port %d: %w", excludeIndex, protocol, portIndex, err)
+		return fmt.Errorf("%s, %s port %d: %w", context, protocol, portIndex, err)
 	}
 
 	return nil

@@ -30,40 +30,37 @@ docker_containers:
   latency: 50ms
   jitter: 10ms
   loss: 0.1%
-  exclude_networks:
-    - type: "cidr"
-      cidr_config:
-        ranges:
-          - "192.168.1.0/24"
-          - "10.0.0.0/8"
+  exclusions:
+    cidr:
+      ranges:
+        - "192.168.1.0/24"
+        - "10.0.0.0/8"
 
 # Example with private network exclusions (RFC1918)
 - name: "test-private-exclusions"
   download_rate: 1Mbps
   upload_rate: 500kbps
-  exclude_networks:
-    - type: "private-ranges"  # Automatically excludes 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+  exclusions:
+    private-networks: true  # Automatically excludes 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
 
 # Example with DNS-based network exclusions
 - name: "test-dns-exclusions"
   download_rate: 1Mbps
   upload_rate: 500kbps
   latency: 100ms
-  exclude_networks:
-    - type: "private-ranges"
-    - type: "dns"
-      dns_config:
-        names:
-          - "api.github.com"
-          - "registry.npmjs.org"
-          - "cdn.jsdelivr.net"
-        check_interval: "10m"
+  exclusions:
+    private-networks: true
+    dns:
+      names:
+        - "api.github.com"
+        - "registry.npmjs.org"
+        - "cdn.jsdelivr.net"
+      check_interval: "10m"
 
 # Example with port exclusions
 - name: "test-port-exclusions"
   download_rate: 1Mbps
   upload_rate: 500kbps
-  exclude_networks:
-    - type: "ports"
-      port_config:
-        tcp: ["80", "443"]
+  exclusions:
+    ports:
+      tcp: ["80", "443"]
