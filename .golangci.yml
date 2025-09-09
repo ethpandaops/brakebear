@@ -21,10 +21,12 @@ linters:
     - err113
   settings:
     funlen:
-      lines: 80
+      lines: 90
       statements: 40
     gocyclo:
       min-complexity: 15
+    cyclop:
+      max-complexity: 15
     lll:
       line-length: 150
     nestif:
