@@ -37,15 +37,9 @@ docker_containers:
           - "192.168.1.0/24"
           - "10.0.0.0/8"
 
-# Example with default private network exclusions
-- name: "test-default-exclusions"
+# Example with private network exclusions (RFC1918)
+- name: "test-private-exclusions"
   download_rate: 1Mbps
   upload_rate: 500kbps
   exclude_networks:
-    - type: "cidr"
-      cidr_config:
-        # When ranges are empty, defaults to RFC1918 private networks:
-        # - 10.0.0.0/8
-        # - 172.16.0.0/12
-        # - 192.168.0.0/16
-        ranges: []
+    - type: "private-ranges"  # Automatically excludes 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16

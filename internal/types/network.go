@@ -52,11 +52,9 @@ func ParseExcludeNetworks(excludes []ExcludeNetwork) ([]string, error) {
 	var ranges []string
 
 	for _, exclude := range excludes {
-		if exclude.Type == "cidr" && exclude.CIDRConfig != nil {
-			if len(exclude.CIDRConfig.Ranges) == 0 {
-				// If ranges are not defined, use default RFC1918 private networks
-				ranges = append(ranges, GetDefaultPrivateRanges()...)
-			} else {
+		switch exclude.Type {
+		case "cidr":
+			if exclude.CIDRConfig != nil {
 				// Validate each CIDR range before adding
 				for _, cidr := range exclude.CIDRConfig.Ranges {
 					if err := ValidateCIDRRange(cidr); err != nil {
@@ -64,6 +62,13 @@ func ParseExcludeNetworks(excludes []ExcludeNetwork) ([]string, error) {
 					}
 					ranges = append(ranges, strings.TrimSpace(cidr))
 				}
+			}
+		case "private-ranges":
+			// Add RFC1918 private network ranges
+			ranges = append(ranges, GetDefaultPrivateRanges()...)
+		default:
+			if exclude.Type != "" {
+				return nil, fmt.Errorf("unsupported exclude network type '%s', supported types: 'cidr', 'private-ranges'", exclude.Type)
 			}
 		}
 	}

@@ -411,15 +411,36 @@ func validateExcludeNetwork(exclude ExcludeNetwork, index int) error {
 		return fmt.Errorf("exclude network %d: type cannot be empty", index)
 	}
 
-	if exclude.Type != "cidr" {
-		return fmt.Errorf("exclude network %d: unsupported type '%s' (only 'cidr' is supported)", index, exclude.Type)
+	// Validate exclude network type
+	validTypes := []string{"cidr", "private-ranges"}
+	isValidType := false
+	for _, validType := range validTypes {
+		if exclude.Type == validType {
+			isValidType = true
+			break
+		}
+	}
+	if !isValidType {
+		return fmt.Errorf("exclude network %d: unsupported type '%s', supported types: %v", index, exclude.Type, validTypes)
 	}
 
-	if exclude.CIDRConfig != nil {
+	// Type-specific validation
+	switch exclude.Type {
+	case "cidr":
+		if exclude.CIDRConfig == nil {
+			return fmt.Errorf("exclude network %d: cidr_config is required for type 'cidr'", index)
+		}
+		if len(exclude.CIDRConfig.Ranges) == 0 {
+			return fmt.Errorf("exclude network %d: cidr_config.ranges cannot be empty for type 'cidr'", index)
+		}
 		for j, cidr := range exclude.CIDRConfig.Ranges {
 			if err := types.ValidateCIDRRange(cidr); err != nil {
 				return fmt.Errorf("exclude network %d, CIDR range %d: %w", index, j, err)
 			}
+		}
+	case "private-ranges":
+		if exclude.CIDRConfig != nil {
+			return fmt.Errorf("exclude network %d: cidr_config should not be specified for type 'private-ranges'", index)
 		}
 	}
 
