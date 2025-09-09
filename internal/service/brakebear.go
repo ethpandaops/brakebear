@@ -221,6 +221,12 @@ func (s *service) handleContainerEvent(ctx context.Context, event docker.Contain
 				}).Warn("Failed to handle container update event")
 			}
 		}
+	case "reconnected":
+		s.log.Info("Docker daemon reconnected, re-applying configuration to existing containers")
+		// Re-run container reconciliation to reapply limits to existing containers
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		s.reconcileContainers(ctxWithTimeout)
 	default:
 		s.log.WithFields(logrus.Fields{
 			"event_type":   event.Type,
