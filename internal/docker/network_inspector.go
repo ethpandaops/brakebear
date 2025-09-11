@@ -57,10 +57,16 @@ func (ni *NetworkInspector) DiscoverNetworks(ctx context.Context, config *brakeb
 		}
 	}
 
+	// Separate IPv4 and IPv6 CIDRs for enhanced logging
+	ipv4CIDRs, ipv6CIDRs := ni.separateCIDRsByIPVersion(cidrs)
+
 	ni.log.WithFields(logrus.Fields{
 		"network_count": len(networks),
 		"cidrs_found":   len(cidrs),
-		"cidrs":         cidrs,
+		"ipv4_cidrs":    ipv4CIDRs,
+		"ipv6_cidrs":    ipv6CIDRs,
+		"ipv4_count":    len(ipv4CIDRs),
+		"ipv6_count":    len(ipv6CIDRs),
 	}).Debug("Network discovery completed")
 
 	return cidrs, nil
@@ -211,9 +217,13 @@ func (ni *NetworkInspector) extractCIDRsFromNetwork(ctx context.Context, network
 				}
 
 				cidrs = append(cidrs, config.Subnet)
+
+				// Determine IP version for enhanced logging
+				ipVersion := ni.getIPVersion(config.Subnet)
 				ni.log.WithFields(logrus.Fields{
 					"network_name": networkName,
 					"cidr":         config.Subnet,
+					"ip_version":   ipVersion,
 				}).Debug("Extracted CIDR from network")
 			}
 		}
@@ -239,4 +249,42 @@ func (ni *NetworkInspector) validateCIDR(cidr string) error {
 	}
 
 	return nil
+}
+
+// separateCIDRsByIPVersion separates a list of CIDRs into IPv4 and IPv6 categories
+func (ni *NetworkInspector) separateCIDRsByIPVersion(cidrs []string) ([]string, []string) {
+	var ipv4, ipv6 []string
+
+	for _, cidr := range cidrs {
+		ip, _, err := net.ParseCIDR(cidr)
+		if err != nil {
+			ni.log.WithFields(logrus.Fields{
+				"cidr":  cidr,
+				"error": err.Error(),
+			}).Debug("Failed to parse CIDR for IP version detection, skipping")
+			continue
+		}
+
+		if ip.To4() != nil {
+			ipv4 = append(ipv4, cidr)
+		} else {
+			ipv6 = append(ipv6, cidr)
+		}
+	}
+
+	return ipv4, ipv6
+}
+
+// getIPVersion determines the IP version (IPv4 or IPv6) of a CIDR range
+func (ni *NetworkInspector) getIPVersion(cidr string) string {
+	ip, _, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "unknown"
+	}
+
+	if ip.To4() != nil {
+		return "IPv4"
+	}
+
+	return "IPv6"
 }

@@ -570,16 +570,21 @@ func (s *service) resolveDNSExclusions(ctx context.Context, limits *types.Networ
 			}
 
 			if len(ips) > 0 {
-				// Convert resolved IPv4 IPs to CIDR ranges (skip IPv6 for now)
+				// Convert all resolved IPs to CIDR ranges (both IPv4 and IPv6)
 				var cidrs []string
 				for _, ip := range ips {
 					parsedIP := net.ParseIP(ip)
 					if parsedIP == nil {
 						continue
 					}
-					// Only process IPv4 addresses for now
+					// Process both IPv4 and IPv6 addresses
+					var cidr string
 					if parsedIP.To4() != nil {
-						cidr := ip + "/32" // IPv4
+						cidr = ip + "/32" // IPv4 host
+					} else {
+						cidr = ip + "/128" // IPv6 host
+					}
+					if cidr != "" {
 						cidrs = append(cidrs, cidr)
 					}
 				}

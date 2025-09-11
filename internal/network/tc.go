@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -15,15 +16,30 @@ import (
 	"github.com/ethpandaops/brakebear/internal/types"
 )
 
+// ProtocolConfig defines the dual-stack protocol configuration for traffic control
+type ProtocolConfig struct {
+	IPv4Enabled  bool
+	IPv6Enabled  bool
+	IPv4Priority int
+	IPv6Priority int
+}
+
 // TCManager manages traffic control operations using tc commands
 type TCManager struct {
-	log logrus.FieldLogger
+	log      logrus.FieldLogger
+	protocol *ProtocolConfig
 }
 
 // NewTCManager creates a new traffic control manager
 func NewTCManager(log logrus.FieldLogger) *TCManager {
 	return &TCManager{
 		log: log.WithField("package", "network.tc"),
+		protocol: &ProtocolConfig{
+			IPv4Enabled:  true,
+			IPv6Enabled:  true,
+			IPv4Priority: 1,   // IPv4 filters start at priority 1
+			IPv6Priority: 100, // IPv6 filters start at priority 100 (separate range)
+		},
 	}
 }
 
@@ -110,24 +126,56 @@ func (t *TCManager) GetInterfaces() ([]string, error) {
 	return t.getInterfaces()
 }
 
-// generateExclusionFilters creates tc filter commands for excluded CIDR ranges
+// generateExclusionFilters creates tc filter commands for excluded CIDR ranges with dual-stack support
 // Uses smart filtering to avoid excluding the container's own traffic
 func (t *TCManager) generateExclusionFilters(ifaceName string, parent string, excludeRanges []string, isIngress bool) [][]string {
 	var filters [][]string
+	ipv4Priority := t.protocol.IPv4Priority
+	ipv6Priority := t.protocol.IPv6Priority
 
 	for _, cidr := range excludeRanges {
+		var protocol, matchPrefix string
+		var priority int
+
+		switch {
+		case isIPv4CIDR(cidr):
+			if !t.protocol.IPv4Enabled {
+				continue // Skip IPv4 if disabled
+			}
+			protocol = "ip"
+			matchPrefix = "ip"
+			priority = ipv4Priority
+			ipv4Priority++
+		case isIPv6CIDR(cidr):
+			if !t.protocol.IPv6Enabled {
+				continue // Skip IPv6 if disabled
+			}
+			protocol = "ipv6"
+			matchPrefix = "ip6"
+			priority = ipv6Priority
+			ipv6Priority++
+		default:
+			t.log.WithFields(logrus.Fields{
+				"interface": ifaceName,
+				"cidr":      cidr,
+			}).Warn("Invalid CIDR range, skipping")
+			continue
+		}
+
 		if isIngress {
 			// INGRESS (Download): Only exclude traffic FROM external sources in the CIDR range
 			// This allows responses from excluded networks to flow normally while
 			// preventing the container from being limited when talking to those networks
 			filters = append(filters, []string{
 				"tc", "filter", "add", "dev", ifaceName, "parent", parent,
-				"protocol", "ip", "prio", "1", "u32",
-				"match", "ip", "src", cidr, "flowid", "1:2",
+				"protocol", protocol, "prio", strconv.Itoa(priority), "u32",
+				"match", matchPrefix, "src", cidr, "flowid", "1:2",
 			})
 			t.log.WithFields(logrus.Fields{
 				"interface": ifaceName,
 				"cidr":      cidr,
+				"protocol":  protocol,
+				"priority":  priority,
 				"direction": "ingress",
 			}).Debug("Created ingress exclusion filter for external sources")
 		} else {
@@ -136,12 +184,14 @@ func (t *TCManager) generateExclusionFilters(ifaceName string, parent string, ex
 			// still applying limits to external traffic
 			filters = append(filters, []string{
 				"tc", "filter", "add", "dev", ifaceName, "parent", parent,
-				"protocol", "ip", "prio", "1", "u32",
-				"match", "ip", "dst", cidr, "flowid", "1:2",
+				"protocol", protocol, "prio", strconv.Itoa(priority), "u32",
+				"match", matchPrefix, "dst", cidr, "flowid", "1:2",
 			})
 			t.log.WithFields(logrus.Fields{
 				"interface": ifaceName,
 				"cidr":      cidr,
+				"protocol":  protocol,
+				"priority":  priority,
 				"direction": "egress",
 			}).Debug("Created egress exclusion filter for local destinations")
 		}
@@ -150,7 +200,7 @@ func (t *TCManager) generateExclusionFilters(ifaceName string, parent string, ex
 	return filters
 }
 
-// generatePortExclusionFilters creates tc filter commands for excluded ports
+// generatePortExclusionFilters creates tc filter commands for excluded ports with dual-stack support
 func (t *TCManager) generatePortExclusionFilters(ifaceName string, parent string, portConfig *types.PortConfig, isIngress bool) [][]string {
 	if portConfig == nil {
 		return nil
@@ -166,8 +216,9 @@ func (t *TCManager) generatePortExclusionFilters(ifaceName string, parent string
 		return nil
 	}
 
-	// Pre-allocate filters slice
-	filters := make([][]string, 0, len(portSpecs))
+	var filters [][]string
+	ipv4Priority := t.protocol.IPv4Priority
+	ipv6Priority := t.protocol.IPv6Priority
 
 	// Generate filters for each port specification
 	for _, spec := range portSpecs {
@@ -187,31 +238,50 @@ func (t *TCManager) generatePortExclusionFilters(ifaceName string, parent string
 		if isIngress {
 			// INGRESS (Download): Match source ports for incoming traffic
 			portField = "sport"
-			t.log.WithFields(logrus.Fields{
-				"interface": ifaceName,
-				"protocol":  spec.Protocol,
-				"port":      spec.Port,
-				"direction": "ingress",
-			}).Debug("Creating ingress port exclusion filter")
 		} else {
 			// EGRESS (Upload): Match destination ports for outgoing traffic
 			portField = "dport"
-			t.log.WithFields(logrus.Fields{
-				"interface": ifaceName,
-				"protocol":  spec.Protocol,
-				"port":      spec.Port,
-				"direction": "egress",
-			}).Debug("Creating egress port exclusion filter")
 		}
 
-		// Create the tc filter command
-		filters = append(filters, []string{
-			"tc", "filter", "add", "dev", ifaceName, "parent", parent,
-			"protocol", "ip", "prio", "1", "u32",
-			"match", "ip", "protocol", protocolNum, "0xff",
-			"match", "ip", portField, strconv.Itoa(spec.Port), "0xffff",
-			"flowid", "1:2", // unrestricted class
-		})
+		// Create IPv4 filter if enabled
+		if t.protocol.IPv4Enabled {
+			filters = append(filters, []string{
+				"tc", "filter", "add", "dev", ifaceName, "parent", parent,
+				"protocol", "ip", "prio", strconv.Itoa(ipv4Priority), "u32",
+				"match", "ip", "protocol", protocolNum, "0xff",
+				"match", "ip", portField, strconv.Itoa(spec.Port), "0xffff",
+				"flowid", "1:2", // unrestricted class
+			})
+			t.log.WithFields(logrus.Fields{
+				"interface":  ifaceName,
+				"protocol":   spec.Protocol,
+				"port":       spec.Port,
+				"ip_version": "IPv4",
+				"priority":   ipv4Priority,
+				"direction":  map[bool]string{true: "ingress", false: "egress"}[isIngress],
+			}).Debug("Created IPv4 port exclusion filter")
+			ipv4Priority++
+		}
+
+		// Create IPv6 filter if enabled
+		if t.protocol.IPv6Enabled {
+			filters = append(filters, []string{
+				"tc", "filter", "add", "dev", ifaceName, "parent", parent,
+				"protocol", "ipv6", "prio", strconv.Itoa(ipv6Priority), "u32",
+				"match", "ip6", "protocol", protocolNum, "0xff",
+				"match", "ip6", portField, strconv.Itoa(spec.Port), "0xffff",
+				"flowid", "1:2", // unrestricted class
+			})
+			t.log.WithFields(logrus.Fields{
+				"interface":  ifaceName,
+				"protocol":   spec.Protocol,
+				"port":       spec.Port,
+				"ip_version": "IPv6",
+				"priority":   ipv6Priority,
+				"direction":  map[bool]string{true: "ingress", false: "egress"}[isIngress],
+			}).Debug("Created IPv6 port exclusion filter")
+			ipv6Priority++
+		}
 	}
 
 	return filters
@@ -301,11 +371,19 @@ func (t *TCManager) applyEgressLimits(ifaceName string, limits *types.NetworkLim
 		}
 	}
 
-	// Add catch-all filter with priority 2 for restricted traffic
-	*commands = append(*commands, []string{
-		"tc", "filter", "add", "dev", ifaceName, "parent", "1:", "protocol", "all", "prio", "2", "u32",
-		"match", "u32", "0", "0", "flowid", "1:1",
-	})
+	// Add catch-all filters for restricted traffic (dual-stack support)
+	if t.protocol.IPv4Enabled {
+		*commands = append(*commands, []string{
+			"tc", "filter", "add", "dev", ifaceName, "parent", "1:", "protocol", "ip", "prio", "99", "u32",
+			"match", "u32", "0", "0", "flowid", "1:1",
+		})
+	}
+	if t.protocol.IPv6Enabled {
+		*commands = append(*commands, []string{
+			"tc", "filter", "add", "dev", ifaceName, "parent", "1:", "protocol", "ipv6", "prio", "999", "u32",
+			"match", "u32", "0", "0", "flowid", "1:1",
+		})
+	}
 
 	return nil
 }
@@ -398,11 +476,19 @@ func (t *TCManager) applyIngressLimits(ifaceName string, limits *types.NetworkLi
 		}
 	}
 
-	// Add catch-all filter with priority 2 for restricted traffic
-	*commands = append(*commands, []string{
-		"tc", "filter", "add", "dev", ifbInterface, "parent", "1:", "protocol", "all", "prio", "2", "u32",
-		"match", "u32", "0", "0", "flowid", "1:1",
-	})
+	// Add catch-all filters for restricted traffic (dual-stack support)
+	if t.protocol.IPv4Enabled {
+		*commands = append(*commands, []string{
+			"tc", "filter", "add", "dev", ifbInterface, "parent", "1:", "protocol", "ip", "prio", "99", "u32",
+			"match", "u32", "0", "0", "flowid", "1:1",
+		})
+	}
+	if t.protocol.IPv6Enabled {
+		*commands = append(*commands, []string{
+			"tc", "filter", "add", "dev", ifbInterface, "parent", "1:", "protocol", "ipv6", "prio", "999", "u32",
+			"match", "u32", "0", "0", "flowid", "1:1",
+		})
+	}
 
 	// Add ingress qdisc to main interface
 	*commands = append(*commands, []string{
@@ -604,4 +690,22 @@ func (t *TCManager) executeCommands(ctx context.Context, commands [][]string) er
 		}
 	}
 	return nil
+}
+
+// isIPv4CIDR checks if the given CIDR string represents an IPv4 network
+func isIPv4CIDR(cidr string) bool {
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return false
+	}
+	return network.IP.To4() != nil
+}
+
+// isIPv6CIDR checks if the given CIDR string represents an IPv6 network
+func isIPv6CIDR(cidr string) bool {
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return false
+	}
+	return network.IP.To4() == nil
 }

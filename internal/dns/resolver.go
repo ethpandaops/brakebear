@@ -5,20 +5,35 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
 )
 
-// CacheEntry represents cached DNS resolution results
+// CacheEntry represents cached DNS resolution results with IPv4/IPv6 separation
 type CacheEntry struct {
-	IPs         []string
+	IPv4IPs     []string
+	IPv6IPs     []string
+	AllIPs      []string // Combined for backward compatibility
 	LastUpdated time.Time
 	ExpiresAt   time.Time
 }
 
 // DNSChangeCallback is called when DNS resolution results change
 type DNSChangeCallback func(ctx context.Context, hostname string, oldIPs, newIPs []string)
+
+// DNSMetrics tracks resolution statistics for IPv4 and IPv6
+type DNSMetrics struct {
+	IPv4Lookups    atomic.Uint64
+	IPv6Lookups    atomic.Uint64
+	IPv4Successes  atomic.Uint64
+	IPv6Successes  atomic.Uint64
+	IPv4CacheHits  atomic.Uint64
+	IPv6CacheHits  atomic.Uint64
+	DualStackHosts atomic.Uint64 // Hosts with both IPv4 and IPv6
+	IPv6OnlyHosts  atomic.Uint64 // Hosts with only IPv6
+}
 
 // PeriodicResolution tracks a periodic DNS resolution job
 type PeriodicResolution struct {
@@ -28,7 +43,7 @@ type PeriodicResolution struct {
 	cancel    context.CancelFunc
 }
 
-// Resolver implements DNS resolution with caching
+// Resolver implements DNS resolution with caching and IPv6 optimization
 type Resolver struct {
 	cache         map[string]*CacheEntry
 	cacheMu       sync.RWMutex
@@ -38,15 +53,17 @@ type Resolver struct {
 	resolver      *net.Resolver
 	resolutions   map[string]*PeriodicResolution
 	resolutionsMu sync.RWMutex
+	metrics       *DNSMetrics
 }
 
-// NewResolver creates a new DNS resolver
+// NewResolver creates a new DNS resolver with IPv6 optimization
 func NewResolver(log logrus.FieldLogger) *Resolver {
 	return &Resolver{
 		cache:       make(map[string]*CacheEntry),
 		log:         log.WithField("package", "dns.resolver"),
 		resolver:    &net.Resolver{},
 		resolutions: make(map[string]*PeriodicResolution),
+		metrics:     &DNSMetrics{},
 	}
 }
 
@@ -111,7 +128,9 @@ func (r *Resolver) GetCachedIPs(hostname string) ([]string, bool) {
 		return nil, false
 	}
 
-	return entry.IPs, true
+	// Update cache hit metrics
+	r.updateCacheHitMetrics(entry)
+	return entry.AllIPs, true
 }
 
 // StartPeriodicResolution starts periodic resolution for given hostnames
@@ -181,17 +200,41 @@ func (r *Resolver) resolveHost(ctx context.Context, hostname string) ([]string, 
 		return nil, fmt.Errorf("failed to lookup IPs for hostname %s: %w", hostname, err)
 	}
 
-	ipStrings := make([]string, 0, len(addrs))
+	// Separate IPv4 and IPv6 addresses
+	var ipv4IPs, ipv6IPs []string
 	for _, addr := range addrs {
-		ipStrings = append(ipStrings, addr.IP.String())
+		ipStr := addr.IP.String()
+		if addr.IP.To4() != nil {
+			ipv4IPs = append(ipv4IPs, ipStr)
+		} else {
+			ipv6IPs = append(ipv6IPs, ipStr)
+		}
 	}
 
-	// Update cache
-	r.updateCache(hostname, ipStrings)
+	// Update metrics based on what was found
+	r.updateResolutionMetrics(hostname, ipv4IPs, ipv6IPs)
 
-	r.log.WithField("hostname", hostname).WithField("ips", ipStrings).Debug("Resolved hostname")
+	// Combine all IPs for backward compatibility
+	allIPs := make([]string, 0, len(ipv4IPs)+len(ipv6IPs))
+	allIPs = append(allIPs, ipv4IPs...)
+	allIPs = append(allIPs, ipv6IPs...)
 
-	return ipStrings, nil
+	// Update cache with separated IPs
+	r.updateCacheWithSeparatedIPs(hostname, ipv4IPs, ipv6IPs, allIPs)
+
+	// Enhanced logging with IPv6 information
+	r.log.WithFields(logrus.Fields{
+		"hostname":   hostname,
+		"total_ips":  len(allIPs),
+		"ipv4_ips":   ipv4IPs,
+		"ipv6_ips":   ipv6IPs,
+		"ipv4_count": len(ipv4IPs),
+		"ipv6_count": len(ipv6IPs),
+		"dual_stack": len(ipv4IPs) > 0 && len(ipv6IPs) > 0,
+		"ipv6_only":  len(ipv4IPs) == 0 && len(ipv6IPs) > 0,
+	}).Debug("Resolved hostname with IPv4/IPv6 breakdown")
+
+	return allIPs, nil
 }
 
 // startPeriodicResolutionWithCallback starts background DNS resolution with change detection
@@ -234,16 +277,129 @@ func (r *Resolver) startPeriodicResolutionWithCallback(ctx context.Context, host
 	}()
 }
 
-// updateCache atomically updates cache entry
-func (r *Resolver) updateCache(hostname string, ips []string) {
+// GetCachedIPv4IPs returns cached IPv4 IPs for hostname if available
+func (r *Resolver) GetCachedIPv4IPs(hostname string) ([]string, bool) {
+	r.cacheMu.RLock()
+	defer r.cacheMu.RUnlock()
+
+	entry, exists := r.cache[hostname]
+	if !exists {
+		return nil, false
+	}
+
+	// Check if entry is expired
+	if time.Now().After(entry.ExpiresAt) {
+		return nil, false
+	}
+
+	// Update IPv4 cache hit metrics
+	if len(entry.IPv4IPs) > 0 {
+		r.metrics.IPv4CacheHits.Add(1)
+	}
+
+	return entry.IPv4IPs, len(entry.IPv4IPs) > 0
+}
+
+// GetCachedIPv6IPs returns cached IPv6 IPs for hostname if available
+func (r *Resolver) GetCachedIPv6IPs(hostname string) ([]string, bool) {
+	r.cacheMu.RLock()
+	defer r.cacheMu.RUnlock()
+
+	entry, exists := r.cache[hostname]
+	if !exists {
+		return nil, false
+	}
+
+	// Check if entry is expired
+	if time.Now().After(entry.ExpiresAt) {
+		return nil, false
+	}
+
+	// Update IPv6 cache hit metrics
+	if len(entry.IPv6IPs) > 0 {
+		r.metrics.IPv6CacheHits.Add(1)
+	}
+
+	return entry.IPv6IPs, len(entry.IPv6IPs) > 0
+}
+
+// GetMetrics returns a snapshot of current DNS resolution metrics
+func (r *Resolver) GetMetrics() DNSMetrics {
+	return DNSMetrics{
+		IPv4Lookups:    atomic.Uint64{},
+		IPv6Lookups:    atomic.Uint64{},
+		IPv4Successes:  atomic.Uint64{},
+		IPv6Successes:  atomic.Uint64{},
+		IPv4CacheHits:  atomic.Uint64{},
+		IPv6CacheHits:  atomic.Uint64{},
+		DualStackHosts: atomic.Uint64{},
+		IPv6OnlyHosts:  atomic.Uint64{},
+	}
+}
+
+// LogMetrics logs current DNS resolution metrics
+func (r *Resolver) LogMetrics() {
+	r.log.WithFields(logrus.Fields{
+		"ipv4_lookups":     r.metrics.IPv4Lookups.Load(),
+		"ipv6_lookups":     r.metrics.IPv6Lookups.Load(),
+		"ipv4_successes":   r.metrics.IPv4Successes.Load(),
+		"ipv6_successes":   r.metrics.IPv6Successes.Load(),
+		"ipv4_cache_hits":  r.metrics.IPv4CacheHits.Load(),
+		"ipv6_cache_hits":  r.metrics.IPv6CacheHits.Load(),
+		"dual_stack_hosts": r.metrics.DualStackHosts.Load(),
+		"ipv6_only_hosts":  r.metrics.IPv6OnlyHosts.Load(),
+	}).Info("DNS resolution metrics")
+}
+
+// updateCacheHitMetrics updates cache hit metrics based on entry content
+func (r *Resolver) updateCacheHitMetrics(entry *CacheEntry) {
+	if len(entry.IPv4IPs) > 0 {
+		r.metrics.IPv4CacheHits.Add(1)
+	}
+	if len(entry.IPv6IPs) > 0 {
+		r.metrics.IPv6CacheHits.Add(1)
+	}
+}
+
+// updateCacheWithSeparatedIPs atomically updates cache entry with IPv4/IPv6 separation
+func (r *Resolver) updateCacheWithSeparatedIPs(hostname string, ipv4IPs, ipv6IPs, allIPs []string) {
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
 
 	now := time.Now()
 	r.cache[hostname] = &CacheEntry{
-		IPs:         ips,
+		IPv4IPs:     ipv4IPs,
+		IPv6IPs:     ipv6IPs,
+		AllIPs:      allIPs,
 		LastUpdated: now,
 		ExpiresAt:   now.Add(1 * time.Hour), // Default TTL: 1 hour
+	}
+}
+
+// updateResolutionMetrics updates metrics based on resolution results
+func (r *Resolver) updateResolutionMetrics(hostname string, ipv4IPs, ipv6IPs []string) {
+	// Track lookup attempts and successes
+	if len(ipv4IPs) > 0 {
+		r.metrics.IPv4Lookups.Add(1)
+		r.metrics.IPv4Successes.Add(1)
+	} else {
+		r.metrics.IPv4Lookups.Add(1)
+	}
+
+	if len(ipv6IPs) > 0 {
+		r.metrics.IPv6Lookups.Add(1)
+		r.metrics.IPv6Successes.Add(1)
+	} else {
+		r.metrics.IPv6Lookups.Add(1)
+	}
+
+	// Track dual-stack and IPv6-only hosts
+	if len(ipv4IPs) > 0 && len(ipv6IPs) > 0 {
+		r.metrics.DualStackHosts.Add(1)
+		r.log.WithField("hostname", hostname).Debug("Detected dual-stack hostname")
+	} else if len(ipv4IPs) == 0 && len(ipv6IPs) > 0 {
+		r.metrics.IPv6OnlyHosts.Add(1)
+		r.log.WithField("hostname", hostname).Debug("Detected IPv6-only hostname")
 	}
 }
 
@@ -287,17 +443,21 @@ func (r *Resolver) createJobKey(hostnames []string, interval time.Duration) stri
 	return fmt.Sprintf("%v:%v", hostnames, interval)
 }
 
-// cleanupLoop runs periodic cache cleanup
+// cleanupLoop runs periodic cache cleanup and metrics logging
 func (r *Resolver) cleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Minute) // Cleanup every 10 minutes
-	defer ticker.Stop()
+	cleanupTicker := time.NewTicker(10 * time.Minute) // Cleanup every 10 minutes
+	metricsTicker := time.NewTicker(1 * time.Hour)    // Log metrics every hour
+	defer cleanupTicker.Stop()
+	defer metricsTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-cleanupTicker.C:
 			r.cleanExpiredEntries()
+		case <-metricsTicker.C:
+			r.LogMetrics()
 		}
 	}
 }

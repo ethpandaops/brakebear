@@ -33,15 +33,17 @@ docker_containers:
   exclusions:
     cidr:
       ranges:
-        - "192.168.1.0/24"
-        - "10.0.0.0/8"
+        - "192.168.1.0/24"        # IPv4 private range
+        - "10.0.0.0/8"             # IPv4 private range
+        - "2001:db8::/32"          # IPv6 documentation range
+        - "fc00::/7"               # IPv6 Unique Local Addresses
 
-# Example with private network exclusions (RFC1918)
+# Example with private network exclusions (RFC1918 + IPv6)
 - name: "test-private-exclusions"
   download_rate: 1Mbps
   upload_rate: 500kbps
   exclusions:
-    private-networks: true  # Automatically excludes 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+    private-networks: true  # Automatically excludes 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7, fe80::/10
 
 # Example with DNS-based network exclusions
 - name: "test-dns-exclusions"
@@ -83,6 +85,37 @@ docker_containers:
     docker-networks:
       names: ["*"]  # Exclude all Docker bridge networks
 
+# IPv6 dual-stack example with comprehensive exclusions
+- name: "ipv6-dual-stack-comprehensive"
+  download_rate: 50Mbps
+  upload_rate: 25Mbps
+  latency: 30ms
+  jitter: 10ms
+  loss: 0.05%
+  exclusions:
+    private-networks: true  # Includes both IPv4 RFC1918 and IPv6 ULA/Link-Local
+    cidr:
+      ranges:
+        # IPv4 ranges
+        - "203.0.113.0/24"       # IPv4 TEST-NET-3
+        - "198.51.100.0/24"      # IPv4 TEST-NET-2  
+        - "192.0.2.100/32"       # Specific IPv4 host
+        # IPv6 ranges
+        - "2001:db8::/32"        # IPv6 documentation prefix
+        - "2001:db8:85a3::/64"   # Specific IPv6 subnet
+        - "2001:db8::100/128"    # Specific IPv6 host
+    dns:
+      names:
+        - "google.com"           # Dual-stack hostname
+        - "cloudflare.com"       # Dual-stack hostname  
+        - "ipv6.google.com"      # IPv6-preferred hostname
+      check_interval: "15m"
+    ports:
+      tcp: ["80", "443", "22", "8080-8090"]
+      udp: ["53", "123", "546-547"]  # Includes DHCPv6 ports
+    docker-networks:
+      names: ["ipv6-enabled-network", "dual-stack-network"]
+
 # Example with combined exclusions including Docker networks
 - name: "test-combined-exclusions"
   download_rate: 2Mbps
@@ -93,7 +126,7 @@ docker_containers:
   exclusions:
     private-networks: true
     cidr:
-      ranges: ["203.0.113.0/24"]
+      ranges: ["203.0.113.0/24", "2001:db8::/32"]  # IPv4 and IPv6 documentation ranges
     dns:
       names: ["internal-api.company.com"]
       check_interval: "5m"
