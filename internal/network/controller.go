@@ -540,10 +540,11 @@ func (c *Controller) updateCIDRRanges(ranges []string, oldIPs, newIPs []string) 
 		}
 	}
 
-	// Add new IPs (IPv4 only)
+	// Add new IPs (both IPv4 and IPv6)
 	for _, newIP := range newIPs {
-		if c.isValidIPv4(newIP) {
-			updatedRanges = append(updatedRanges, newIP+"/32")
+		if c.isValidIP(newIP) {
+			cidrSuffix := c.getCIDRSuffix(newIP)
+			updatedRanges = append(updatedRanges, newIP+cidrSuffix)
 		}
 	}
 
@@ -571,10 +572,10 @@ func (c *Controller) contains(slice []string, item string) bool {
 	return false
 }
 
-// isValidIPv4 checks if an IP is a valid IPv4 address
-func (c *Controller) isValidIPv4(ip string) bool {
+// isValidIP checks if an IP is a valid IPv4 or IPv6 address
+func (c *Controller) isValidIP(ip string) bool {
 	parsedIP := net.ParseIP(ip)
-	return parsedIP != nil && parsedIP.To4() != nil
+	return parsedIP != nil
 }
 
 // updateLimitsWithDockerNetworks creates updated limits with new Docker network CIDRs
@@ -613,6 +614,21 @@ func (c *Controller) updateLimitsWithDockerNetworks(limits *types.NetworkLimits,
 	}
 
 	return updatedLimits
+}
+
+// getCIDRSuffix returns the appropriate CIDR suffix for an IP address
+func (c *Controller) getCIDRSuffix(ip string) string {
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return "/32" // Default to IPv4 if parsing fails
+	}
+
+	// Check if it's IPv4 (To4() returns nil for IPv6)
+	if parsedIP.To4() != nil {
+		return "/32"
+	}
+	// IPv6
+	return "/128"
 }
 
 // containerUsesDockerNetworks checks if a container uses Docker network exclusions

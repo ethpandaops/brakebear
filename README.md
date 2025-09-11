@@ -10,6 +10,7 @@
 - **Bandwidth limiting**: Upload and download rate limits
 - **Network emulation**: Latency, jitter, and packet loss simulation
 - **Docker integration**: Automatic container discovery and monitoring
+- **IPv6 & dual-stack support**: Full support for IPv4, IPv6, and mixed networks
 - **Smart exclusions**: Bypass traffic limits for specific networks, IPs, ports, or Docker networks
 - **Real-time application**: Apply limits to running containers
 - **Clean removal**: Automatically removes limits when containers stop
@@ -29,7 +30,7 @@
      jitter: 10ms
      loss: 0.1%
      exclusions:
-       private-networks: true # Excludes RFC1918 private networks from traffic limiting
+       private-networks: true # Excludes RFC1918 private networks and IPv6 ULA/Link-Local from traffic limiting
    ```
 
 For more examples, see the [example config file](brakebear.yaml).
@@ -73,76 +74,86 @@ Or build it from the source code:
 BrakeBear supports excluding specific networks from traffic control rules. By default, no exclusions are applied. The following exclusion types can also be combined:
 
 #### Private Networks
-Exclude RFC1918 private networks `(10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)`:
+Exclude RFC1918 private networks and IPv6 private ranges:
+- IPv4: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
+- IPv6: `fc00::/7` (ULA), `fe80::/10` (Link-Local)
+
 ```yaml
 exclusions:
   private-networks: true
 ```
 
 #### CIDR Ranges
-Exclude specific IP ranges using CIDR notation:
+Exclude specific IP ranges using CIDR notation (supports both IPv4 and IPv6):
 ```yaml
 exclusions:
   cidr:
     ranges:
+      # IPv4 ranges
       - "192.168.1.0/24"
       - "10.0.0.0/8"
       - "203.0.113.0/24"
+      # IPv6 ranges
+      - "2001:db8::/32"          # IPv6 documentation range
+      - "fc00::/7"               # IPv6 ULA
+      - "2001:db8::1/128"        # Specific IPv6 host
 ```
 
 #### DNS-Based Exclusions
-Exclude traffic to specific hostnames (with automatic IP resolution):
+Exclude traffic to specific hostnames (with automatic IPv4/IPv6 resolution):
 ```yaml
 exclusions:
   dns:
     names:
-      - "api.github.com"
-      - "registry.npmjs.org"
-      - "cdn.jsdelivr.net"
+      - "api.github.com"         # Resolves to both IPv4 and IPv6
+      - "registry.npmjs.org"     # Dual-stack hostname
+      - "ipv6.google.com"        # IPv6-preferred hostname
     check_interval: "10m"  # How often to re-resolve DNS (optional, default: 5m)
 ```
 
 #### Port-Based Exclusions
-Exclude traffic to specific ports regardless of destination:
+Exclude traffic to specific ports regardless of destination (applies to both IPv4 and IPv6):
 ```yaml
 exclusions:
   ports:
     tcp: ["80", "443", "8000-9000"]    # TCP ports and ranges
-    udp: ["53", "5353"]                # UDP ports
+    udp: ["53", "5353", "546-547"]     # UDP ports (includes DHCPv6)
 ```
 
 #### Docker Network Exclusions
-Exclude traffic on specific Docker networks (automatically discovers CIDR ranges):
+Exclude traffic on specific Docker networks (automatically discovers IPv4/IPv6 CIDR ranges):
 ```yaml
 exclusions:
   docker-networks:
-    names: ["shared-network", "database-network"]  # Specific network names
+    names: ["shared-network"]  # Specific network names
 ```
 
 Exclude traffic on all Docker bridge networks using wildcard:
 ```yaml
 exclusions:
   docker-networks:
-    names: ["*"]  # All bridge networks
+    names: ["*"]  # All bridge networks (IPv4 and IPv6)
 ```
 
 
 
 #### Combined Exclusions
-Multiple exclusion types can be used together:
+Multiple exclusion types can be used together for comprehensive dual-stack support:
 ```yaml
 exclusions:
-  private-networks: true
+  private-networks: true  # IPv4 RFC1918 + IPv6 ULA/Link-Local
   cidr:
-    ranges: ["203.0.113.0/24"]
+    ranges:
+      - "203.0.113.0/24"    # IPv4 documentation range
+      - "2001:db8::/32"     # IPv6 documentation range
   dns:
-    names: ["speedtest.example.com"]
+    names: ["dual-stack.example.com"]  # Resolves to both IPv4 and IPv6
     check_interval: "5m"
   ports:
     tcp: ["80", "443"]
-    udp: ["53"]
+    udp: ["53", "546-547"]  # DNS + DHCPv6
   docker-networks:
-    names: ["management-network"]
+    names: ["bridge"]
 ```
 
 ## Requirements

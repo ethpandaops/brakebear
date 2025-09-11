@@ -70,7 +70,7 @@ func ParseCIDR(cidr string) (*net.IPNet, error) {
 	return ipNet, nil
 }
 
-// ValidateCIDRRange validates a CIDR range string
+// ValidateCIDRRange validates a CIDR range string for both IPv4 and IPv6
 func ValidateCIDRRange(cidr string) error {
 	cidr = strings.TrimSpace(cidr)
 	if cidr == "" {
@@ -78,15 +78,23 @@ func ValidateCIDRRange(cidr string) error {
 	}
 
 	_, err := ParseCIDR(cidr)
-	return err
+	if err != nil {
+		return fmt.Errorf("invalid CIDR format '%s': %w (examples: IPv4: 192.168.1.0/24, 10.0.0.0/8; IPv6: 2001:db8::/32, fc00::/7)", cidr, err)
+	}
+
+	return nil
 }
 
-// GetDefaultPrivateRanges returns RFC1918 private network ranges
+// GetDefaultPrivateRanges returns RFC1918 private network ranges and IPv6 private ranges
 func GetDefaultPrivateRanges() []string {
 	return []string{
+		// IPv4 RFC1918
 		"10.0.0.0/8",
 		"172.16.0.0/12",
 		"192.168.0.0/16",
+		// IPv6 ULA and Link-Local
+		"fc00::/7",  // Unique Local Addresses
+		"fe80::/10", // Link-Local Addresses
 	}
 }
 
@@ -166,18 +174,18 @@ func processDNSExclude(config *DNSConfig, resolver DNSResolver) ([]string, error
 	return ranges, nil
 }
 
-// convertIPToCIDR converts an IP address to a CIDR range (IPv4 only for now)
+// convertIPToCIDR converts an IP address to a CIDR range
 func convertIPToCIDR(ip string) string {
 	parsedIP := net.ParseIP(ip)
 	if parsedIP == nil {
-		return "" // Skip invalid IPs
+		return ""
 	}
 
-	// Only process IPv4 addresses for now (tc u32 doesn't support IPv6 easily)
 	if parsedIP.To4() != nil {
-		return ip + "/32" // IPv4 address
+		return ip + "/32" // IPv4 host
+	} else {
+		return ip + "/128" // IPv6 host
 	}
-	return "" // Skip IPv6 addresses for now
 }
 
 // ParsePortConfig parses a PortConfig into a list of PortSpec entries

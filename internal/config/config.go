@@ -552,13 +552,14 @@ func validateExclusionsConfig(exclusions *ExclusionsConfig) error {
 	return nil
 }
 
-// validateCIDRConfig validates CIDR exclusion configuration
+// validateCIDRConfig validates CIDR exclusion configuration for both IPv4 and IPv6
 func validateCIDRConfig(config *CIDRConfig, context string) error {
 	if config == nil {
 		return fmt.Errorf("%s: configuration is required", context)
 	}
 	if len(config.Ranges) == 0 {
-		return fmt.Errorf("%s: ranges cannot be empty", context)
+		return fmt.Errorf("%s: ranges cannot be empty, please provide CIDR ranges "+
+			"(examples: IPv4: \"192.168.1.0/24\", \"10.0.0.0/8\"; IPv6: \"2001:db8::/32\", \"fc00::/7\")", context)
 	}
 
 	for j, cidr := range config.Ranges {
