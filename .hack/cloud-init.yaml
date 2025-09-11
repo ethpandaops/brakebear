@@ -24,7 +24,7 @@ runcmd:
   - usermod -aG docker ubuntu
   - cat /etc/passwd
 
-  # Install Go 1.23
+  # Install Go 1.24
   - rm -rf /usr/local/go
   - |
     ARCH=$(dpkg --print-architecture)
@@ -35,9 +35,9 @@ runcmd:
     else
       GO_ARCH="amd64"  # fallback to amd64
     fi
-    wget -O /tmp/go1.23.1.linux-${GO_ARCH}.tar.gz https://golang.org/dl/go1.23.1.linux-${GO_ARCH}.tar.gz
-    tar -C /usr/local -xzf /tmp/go1.23.1.linux-${GO_ARCH}.tar.gz
-    rm /tmp/go1.23.1.linux-${GO_ARCH}.tar.gz
+    wget -O /tmp/go1.24.7.linux-${GO_ARCH}.tar.gz https://golang.org/dl/go1.24.7.linux-${GO_ARCH}.tar.gz
+    tar -C /usr/local -xzf /tmp/go1.24.7.linux-${GO_ARCH}.tar.gz
+    rm /tmp/go1.24.7.linux-${GO_ARCH}.tar.gz
 
 write_files:
   - path: /etc/profile.d/go.sh

@@ -1,6 +1,6 @@
 module github.com/ethpandaops/brakebear
 
-go 1.23.5
+go 1.24.7
 
 require (
 	github.com/docker/docker v28.3.3+incompatible
