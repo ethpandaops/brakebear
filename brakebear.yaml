@@ -64,3 +64,41 @@ docker_containers:
   exclusions:
     ports:
       tcp: ["80", "443"]
+
+# Example with Docker network exclusions (specific networks)
+- name: "test-docker-network-exclusions"
+  download_rate: 5Mbps
+  upload_rate: 2Mbps
+  latency: 75ms
+  exclusions:
+    docker-networks:
+      names: ["shared-network", "database-network"]  # Exclude specific Docker networks
+
+# Example with Docker network exclusions (wildcard - all bridge networks)
+- name: "test-docker-wildcard-exclusions"
+  download_rate: 10Mbps
+  upload_rate: 5Mbps
+  latency: 50ms
+  exclusions:
+    docker-networks:
+      names: ["*"]  # Exclude all Docker bridge networks
+
+# Example with combined exclusions including Docker networks
+- name: "test-combined-exclusions"
+  download_rate: 2Mbps
+  upload_rate: 1Mbps
+  latency: 100ms
+  jitter: 25ms
+  loss: 0.2%
+  exclusions:
+    private-networks: true
+    cidr:
+      ranges: ["203.0.113.0/24"]
+    dns:
+      names: ["internal-api.company.com"]
+      check_interval: "5m"
+    ports:
+      tcp: ["22", "80", "443"]
+      udp: ["53"]
+    docker-networks:
+      names: ["management-network"]

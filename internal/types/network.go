@@ -12,10 +12,11 @@ import (
 
 // ExcludeNetwork represents a network exclusion configuration
 type ExcludeNetwork struct {
-	Type       string
-	CIDRConfig *CIDRConfig
-	DNSConfig  *DNSConfig
-	PortConfig *PortConfig
+	Type                string
+	CIDRConfig          *CIDRConfig
+	DNSConfig           *DNSConfig
+	PortConfig          *PortConfig
+	DockerNetworkConfig *DockerNetworkConfig
 }
 
 // CIDRConfig contains CIDR range configurations
@@ -33,6 +34,11 @@ type DNSConfig struct {
 type PortConfig struct {
 	TCP []string `json:"tcp,omitempty"`
 	UDP []string `json:"udp,omitempty"`
+}
+
+// DockerNetworkConfig contains Docker network exclusion configuration
+type DockerNetworkConfig struct {
+	Names []string // Network names to exclude, ["*"] for all bridge networks
 }
 
 // PortRange represents a range of ports
@@ -111,9 +117,13 @@ func processExclude(exclude ExcludeNetwork, resolver DNSResolver) ([]string, err
 	case "ports":
 		// Port exclusions don't return CIDR ranges - they're handled separately in TC layer
 		return nil, nil
+	case "docker-networks":
+		// Docker network exclusions return empty - handled dynamically at service layer
+		return nil, nil
 	default:
 		if exclude.Type != "" {
-			return nil, fmt.Errorf("unsupported exclude network type '%s', supported types: 'cidr', 'private-networks', 'dns', 'ports'", exclude.Type)
+			return nil, fmt.Errorf("unsupported exclude network type '%s', supported types: 'cidr', 'private-networks', 'dns', 'ports', 'docker-networks'",
+				exclude.Type)
 		}
 		return nil, nil
 	}

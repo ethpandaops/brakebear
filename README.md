@@ -10,6 +10,7 @@
 - **Bandwidth limiting**: Upload and download rate limits
 - **Network emulation**: Latency, jitter, and packet loss simulation
 - **Docker integration**: Automatic container discovery and monitoring
+- **Smart exclusions**: Bypass traffic limits for specific networks, IPs, ports, or Docker networks
 - **Real-time application**: Apply limits to running containers
 - **Clean removal**: Automatically removes limits when containers stop
 
@@ -110,6 +111,23 @@ exclusions:
     udp: ["53", "5353"]                # UDP ports
 ```
 
+#### Docker Network Exclusions
+Exclude traffic on specific Docker networks (automatically discovers CIDR ranges):
+```yaml
+exclusions:
+  docker-networks:
+    names: ["shared-network", "database-network"]  # Specific network names
+```
+
+Exclude traffic on all Docker bridge networks using wildcard:
+```yaml
+exclusions:
+  docker-networks:
+    names: ["*"]  # All bridge networks
+```
+
+
+
 #### Combined Exclusions
 Multiple exclusion types can be used together:
 ```yaml
@@ -123,6 +141,8 @@ exclusions:
   ports:
     tcp: ["80", "443"]
     udp: ["53"]
+  docker-networks:
+    names: ["management-network"]
 ```
 
 ## Requirements

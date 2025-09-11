@@ -345,6 +345,59 @@ func (c *Controller) GetContainersWithDNSHostname(hostname string) []string {
 	return containerIDs
 }
 
+// UpdateDockerNetworkExclusions updates Docker network exclusions for a specific container
+func (c *Controller) UpdateDockerNetworkExclusions(ctx context.Context, containerID string, newCIDRs []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Get container state
+	state, exists := c.containerState[containerID]
+	if !exists {
+		return fmt.Errorf("container %s not found in state", containerID)
+	}
+
+	c.log.WithFields(logrus.Fields{
+		"container_id": containerID,
+		"new_cidrs":    newCIDRs,
+	}).Info("Updating Docker network exclusions for container")
+
+	// Create updated limits with new Docker network exclusions
+	updatedLimits := c.updateLimitsWithDockerNetworks(state.Limits, newCIDRs)
+
+	// Apply updated limits
+	interfaces, err := c.applyLimitsInNamespaceWithInterfaces(ctx, state.Namespace, updatedLimits)
+	if err != nil {
+		return fmt.Errorf("failed to apply updated Docker network exclusions: %w", err)
+	}
+
+	// Update stored state
+	state.Limits = updatedLimits
+	state.Interfaces = interfaces
+
+	c.log.WithFields(logrus.Fields{
+		"container_id": containerID,
+		"new_cidrs":    newCIDRs,
+	}).Info("Successfully updated Docker network exclusions")
+
+	return nil
+}
+
+// GetContainersWithDockerNetworkExclusions returns containers that use Docker network exclusions
+func (c *Controller) GetContainersWithDockerNetworkExclusions() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var containers []string
+	for containerID, state := range c.containerState {
+		if c.containerUsesDockerNetworks(state.Limits) {
+			containers = append(containers, containerID)
+		}
+	}
+
+	c.log.WithField("container_count", len(containers)).Debug("Found containers using Docker network exclusions")
+	return containers
+}
+
 // applyLimitsInNamespaceWithInterfaces applies traffic control limits and returns interfaces used
 func (c *Controller) applyLimitsInNamespaceWithInterfaces(ctx context.Context, nsPath string, limits *types.NetworkLimits) ([]string, error) {
 	c.log.WithFields(logrus.Fields{
@@ -522,4 +575,57 @@ func (c *Controller) contains(slice []string, item string) bool {
 func (c *Controller) isValidIPv4(ip string) bool {
 	parsedIP := net.ParseIP(ip)
 	return parsedIP != nil && parsedIP.To4() != nil
+}
+
+// updateLimitsWithDockerNetworks creates updated limits with new Docker network CIDRs
+func (c *Controller) updateLimitsWithDockerNetworks(limits *types.NetworkLimits, newCIDRs []string) *types.NetworkLimits {
+	// Create a copy of the limits
+	updatedLimits := c.copyNetworkLimits(limits)
+
+	// Find and update Docker network exclusions
+	for i, exclude := range limits.ExcludeNetworks {
+		if exclude.Type == "docker-networks" {
+			// Replace Docker network exclusion with CIDR exclusion containing the new CIDRs
+			updatedLimits.ExcludeNetworks[i] = types.ExcludeNetwork{
+				Type: "cidr",
+				CIDRConfig: &types.CIDRConfig{
+					Ranges: newCIDRs,
+				},
+			}
+		} else if exclude.Type == "cidr" && exclude.CIDRConfig != nil {
+			// Check if this CIDR exclusion was originally from Docker networks
+			// If it contains Docker-discovered CIDRs, replace them with the new ones
+			// For simplicity, we'll just append new CIDRs to existing CIDR exclusions
+			updatedRanges := make([]string, 0, len(exclude.CIDRConfig.Ranges)+len(newCIDRs))
+			updatedRanges = append(updatedRanges, exclude.CIDRConfig.Ranges...)
+
+			// Add new Docker network CIDRs if not already present
+			for _, newCIDR := range newCIDRs {
+				if !c.contains(updatedRanges, newCIDR) {
+					updatedRanges = append(updatedRanges, newCIDR)
+				}
+			}
+
+			updatedLimits.ExcludeNetworks[i].CIDRConfig = &types.CIDRConfig{
+				Ranges: updatedRanges,
+			}
+		}
+	}
+
+	return updatedLimits
+}
+
+// containerUsesDockerNetworks checks if a container uses Docker network exclusions
+func (c *Controller) containerUsesDockerNetworks(limits *types.NetworkLimits) bool {
+	if limits == nil || len(limits.ExcludeNetworks) == 0 {
+		return false
+	}
+
+	for _, exclude := range limits.ExcludeNetworks {
+		if exclude.Type == "docker-networks" {
+			return true
+		}
+	}
+
+	return false
 }
