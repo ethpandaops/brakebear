@@ -51,6 +51,8 @@ type ExclusionsConfig struct {
 	Ports *PortConfig `mapstructure:"ports"`
 	// PrivateNetworks enables RFC1918 private network exclusions
 	PrivateNetworks *bool `mapstructure:"private-networks"`
+	// DockerNetworks contains Docker network exclusion configuration
+	DockerNetworks *DockerNetworkConfig `mapstructure:"docker-networks"`
 }
 
 // CIDRConfig contains CIDR range configurations
@@ -73,6 +75,12 @@ type PortConfig struct {
 	TCP []string `mapstructure:"tcp"`
 	// UDP specifies UDP ports to exclude (e.g., ["53", "5353"])
 	UDP []string `mapstructure:"udp"`
+}
+
+// DockerNetworkConfig contains Docker network exclusion configuration
+type DockerNetworkConfig struct {
+	// Names specifies network names to exclude, ["*"] for all bridge networks
+	Names []string `mapstructure:"names"`
 }
 
 // LoadConfig loads configuration from a YAML file using viper
@@ -246,6 +254,16 @@ func (c *ContainerConfig) GetExcludeNetworkRanges() ([]string, error) {
 		})
 	}
 
+	// Add Docker network exclusions
+	if c.Exclusions.DockerNetworks != nil {
+		typesExcludes = append(typesExcludes, types.ExcludeNetwork{
+			Type: "docker-networks",
+			DockerNetworkConfig: &types.DockerNetworkConfig{
+				Names: c.Exclusions.DockerNetworks.Names,
+			},
+		})
+	}
+
 	// Note: DNS resolver not available at config parsing time, pass nil for now
 	// DNS exclusions will be resolved at runtime when the resolver is available
 	ranges, err := types.ParseExcludeNetworks(typesExcludes, nil)
@@ -388,6 +406,16 @@ func (c *ContainerConfig) parseExclusionsConfig(limits *types.NetworkLimits) err
 		})
 	}
 
+	// Add Docker network exclusions
+	if c.Exclusions.DockerNetworks != nil {
+		excludeNetworks = append(excludeNetworks, types.ExcludeNetwork{
+			Type: "docker-networks",
+			DockerNetworkConfig: &types.DockerNetworkConfig{
+				Names: c.Exclusions.DockerNetworks.Names,
+			},
+		})
+	}
+
 	limits.ExcludeNetworks = excludeNetworks
 	return nil
 }
@@ -508,6 +536,13 @@ func validateExclusionsConfig(exclusions *ExclusionsConfig) error {
 	// Validate port configuration
 	if exclusions.Ports != nil {
 		if err := validatePortConfig(exclusions.Ports, "ports"); err != nil {
+			return err
+		}
+	}
+
+	// Validate Docker network configuration
+	if exclusions.DockerNetworks != nil {
+		if err := validateDockerNetworkConfig(exclusions.DockerNetworks, "docker-networks"); err != nil {
 			return err
 		}
 	}
@@ -658,6 +693,25 @@ func validatePortStringForConfig(portStr, protocol, context string, portIndex in
 	_, err := types.ParsePortString(portStr)
 	if err != nil {
 		return fmt.Errorf("%s, %s port %d: %w", context, protocol, portIndex, err)
+	}
+
+	return nil
+}
+
+// validateDockerNetworkConfig validates Docker network exclusion configuration
+func validateDockerNetworkConfig(config *DockerNetworkConfig, context string) error {
+	if config == nil {
+		return fmt.Errorf("%s: configuration is required", context)
+	}
+	if len(config.Names) == 0 {
+		return fmt.Errorf("%s: names cannot be empty", context)
+	}
+
+	// Validate each network name
+	for j, name := range config.Names {
+		if name == "" {
+			return fmt.Errorf("%s, network name %d: name cannot be empty", context, j)
+		}
 	}
 
 	return nil

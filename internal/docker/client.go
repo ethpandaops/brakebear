@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/sirupsen/logrus"
 )
@@ -91,4 +92,47 @@ func (c *Client) Ping(ctx context.Context) error {
 	}).Debug("Docker daemon ping successful")
 
 	return nil
+}
+
+// ListNetworks returns a list of Docker networks
+func (c *Client) ListNetworks(ctx context.Context) ([]network.Summary, error) {
+	if c.client == nil {
+		return nil, errors.New("docker client not initialized")
+	}
+
+	c.log.Debug("Listing Docker networks")
+
+	networks, err := c.client.NetworkList(ctx, network.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list networks: %w", err)
+	}
+
+	c.log.WithField("count", len(networks)).Debug("Retrieved Docker networks")
+	return networks, nil
+}
+
+// InspectNetwork returns detailed information about a specific Docker network
+func (c *Client) InspectNetwork(ctx context.Context, networkID string) (network.Inspect, error) {
+	if c.client == nil {
+		return network.Inspect{}, errors.New("docker client not initialized")
+	}
+
+	if networkID == "" {
+		return network.Inspect{}, errors.New("network ID cannot be empty")
+	}
+
+	c.log.WithField("network_id", networkID).Debug("Inspecting Docker network")
+
+	networkInfo, err := c.client.NetworkInspect(ctx, networkID, network.InspectOptions{})
+	if err != nil {
+		return network.Inspect{}, fmt.Errorf("failed to inspect network %s: %w", networkID, err)
+	}
+
+	c.log.WithFields(logrus.Fields{
+		"network_id":   networkInfo.ID,
+		"network_name": networkInfo.Name,
+		"driver":       networkInfo.Driver,
+	}).Debug("Retrieved network information")
+
+	return networkInfo, nil
 }

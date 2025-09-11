@@ -28,16 +28,18 @@ type Service interface {
 
 // service implements the Service interface and orchestrates all BrakeBear components
 type service struct {
-	config      *config.Config
-	docker      *docker.Client
-	inspector   *docker.Inspector
-	monitor     *docker.Monitor
-	controller  *network.Controller
-	state       state.Manager
-	dnsResolver *dns.Resolver
-	log         logrus.FieldLogger
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	config           *config.Config
+	docker           *docker.Client
+	inspector        *docker.Inspector
+	networkInspector *docker.NetworkInspector
+	monitor          *docker.Monitor
+	networkMonitor   *docker.NetworkMonitor
+	controller       *network.Controller
+	state            state.Manager
+	dnsResolver      *dns.Resolver
+	log              logrus.FieldLogger
+	cancel           context.CancelFunc
+	wg               sync.WaitGroup
 }
 
 // NewService creates a new BrakeBear service with all required components
@@ -52,14 +54,16 @@ func NewService(cfg *config.Config, log logrus.FieldLogger) Service {
 	logger := log.WithField("package", "service")
 
 	return &service{
-		config:      cfg,
-		docker:      nil, // Will be initialized in Start()
-		inspector:   nil, // Will be initialized in Start()
-		monitor:     nil, // Will be initialized in Start()
-		controller:  network.NewController(logger),
-		state:       state.NewManager(logger),
-		dnsResolver: dns.NewResolver(logger),
-		log:         logger,
+		config:           cfg,
+		docker:           nil, // Will be initialized in Start()
+		inspector:        nil, // Will be initialized in Start()
+		networkInspector: nil, // Will be initialized in Start()
+		monitor:          nil, // Will be initialized in Start()
+		networkMonitor:   nil, // Will be initialized in Start()
+		controller:       network.NewController(logger),
+		state:            state.NewManager(logger),
+		dnsResolver:      dns.NewResolver(logger),
+		log:              logger,
 	}
 }
 
@@ -88,8 +92,17 @@ func (s *service) Start(ctx context.Context) error {
 	s.inspector = docker.NewInspector(s.docker, s.log)
 	s.log.Info("Docker inspector initialized successfully")
 
+	// Initialize Docker network inspector
+	s.networkInspector = docker.NewNetworkInspector(s.docker, s.log)
+	s.log.Info("Docker network inspector initialized successfully")
+
 	// Initialize Docker monitor
 	s.monitor = docker.NewMonitor(s.docker, s.inspector, s.log)
+
+	// Initialize Docker network monitor
+	s.networkMonitor = docker.NewNetworkMonitor(s.docker, s.log)
+	s.networkMonitor.AddHandler(s)
+	s.log.Info("Docker network monitor initialized successfully")
 
 	// Start state manager
 	if err := s.state.Start(ctx); err != nil {
@@ -108,6 +121,12 @@ func (s *service) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start Docker monitor: %w", err)
 	}
 	s.log.Info("Docker monitor started successfully")
+
+	// Start Docker network monitor
+	if err := s.networkMonitor.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start Docker network monitor: %w", err)
+	}
+	s.log.Info("Docker network monitor started successfully")
 
 	// Apply initial configuration to existing containers
 	if err := s.applyConfiguration(ctx); err != nil {
@@ -137,6 +156,15 @@ func (s *service) Stop() error {
 
 	// Stop components in reverse order of startup
 	var stopErrors []error
+
+	// Stop Docker network monitor
+	if s.networkMonitor != nil {
+		if err := s.networkMonitor.Stop(); err != nil {
+			stopErrors = append(stopErrors, fmt.Errorf("failed to stop Docker network monitor: %w", err))
+		} else {
+			s.log.Info("Docker network monitor stopped successfully")
+		}
+	}
 
 	// Stop Docker monitor
 	if s.monitor != nil {
@@ -186,6 +214,111 @@ func (s *service) Stop() error {
 
 	s.log.Info("BrakeBear service stopped successfully")
 	return nil
+}
+
+// OnNetworkEvent implements docker.NetworkEventHandler interface
+func (s *service) OnNetworkEvent(ctx context.Context, event docker.NetworkEvent) error {
+	s.log.WithFields(logrus.Fields{
+		"event_type":   event.Type,
+		"network_id":   event.NetworkID,
+		"network_name": event.Name,
+		"driver":       event.Driver,
+		"timestamp":    event.Timestamp,
+	}).Debug("Processing network event")
+
+	switch event.Type {
+	case "create":
+		s.handleNetworkCreate(ctx, event)
+	case "destroy":
+		s.handleNetworkDestroy(ctx, event)
+	case "connect", "disconnect":
+		s.handleNetworkChange(ctx, event)
+	default:
+		s.log.WithFields(logrus.Fields{
+			"event_type": event.Type,
+			"network_id": event.NetworkID,
+		}).Debug("Ignoring unhandled network event type")
+	}
+
+	return nil
+}
+
+// handleNetworkCreate processes network creation events
+func (s *service) handleNetworkCreate(ctx context.Context, event docker.NetworkEvent) {
+	s.log.WithFields(logrus.Fields{
+		"network_id":   event.NetworkID,
+		"network_name": event.Name,
+	}).Debug("Handling network create event")
+
+	// Refresh Docker network exclusions for all containers that use wildcard
+	s.refreshDockerNetworkExclusions(ctx)
+}
+
+// handleNetworkDestroy processes network destruction events
+func (s *service) handleNetworkDestroy(ctx context.Context, event docker.NetworkEvent) {
+	s.log.WithFields(logrus.Fields{
+		"network_id":   event.NetworkID,
+		"network_name": event.Name,
+	}).Debug("Handling network destroy event")
+
+	// Refresh Docker network exclusions for all containers
+	s.refreshDockerNetworkExclusions(ctx)
+}
+
+// handleNetworkChange processes network connection/disconnection events
+func (s *service) handleNetworkChange(ctx context.Context, event docker.NetworkEvent) {
+	s.log.WithFields(logrus.Fields{
+		"event_type":   event.Type,
+		"network_id":   event.NetworkID,
+		"network_name": event.Name,
+	}).Debug("Handling network change event")
+
+	// Network topology changed, refresh exclusions
+	s.refreshDockerNetworkExclusions(ctx)
+}
+
+// refreshDockerNetworkExclusions updates Docker network exclusions for all managed containers
+func (s *service) refreshDockerNetworkExclusions(ctx context.Context) {
+	s.log.Debug("Refreshing Docker network exclusions for all containers")
+
+	// Get all container states
+	allStates := s.state.GetAllStates()
+
+	for containerID, containerState := range allStates {
+		// Check if this container has Docker network exclusions
+		if s.containerHasDockerNetworkExclusions(containerState.Limits) {
+			s.log.WithField("container_id", containerID).Debug("Updating Docker network exclusions")
+
+			// Find the container configuration
+			containerConfig, exists := s.findContainerConfig(ctx, containerID)
+			if !exists {
+				s.log.WithField("container_id", containerID).Debug("No configuration found for container during network refresh")
+				continue
+			}
+
+			// Process the container to update exclusions
+			ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+			if err := s.processContainer(ctxWithTimeout, containerConfig); err != nil {
+				s.log.WithError(err).WithField("container_id", containerID).Error("Failed to refresh Docker network exclusions for container")
+			}
+			cancel()
+		}
+	}
+}
+
+// containerHasDockerNetworkExclusions checks if a container has Docker network exclusions
+func (s *service) containerHasDockerNetworkExclusions(limits *types.NetworkLimits) bool {
+	if limits == nil || len(limits.ExcludeNetworks) == 0 {
+		return false
+	}
+
+	for _, exclude := range limits.ExcludeNetworks {
+		if exclude.Type == "docker-networks" {
+			return true
+		}
+	}
+
+	return false
 }
 
 // handleContainerEvent processes container lifecycle events
@@ -380,6 +513,11 @@ func (s *service) processContainer(ctx context.Context, cfg config.ContainerConf
 		s.log.WithError(err).Warn("Failed to resolve DNS exclusions, proceeding with existing exclusions")
 	}
 
+	// Resolve Docker network exclusions before applying limits
+	if err := s.resolveDockerNetworkExclusions(ctx, limits); err != nil {
+		s.log.WithError(err).Warn("Failed to resolve Docker network exclusions, proceeding with existing exclusions")
+	}
+
 	// Start periodic DNS resolution for any DNS-based exclusions
 	s.startDNSResolutionForContainer(ctx, limits)
 
@@ -459,6 +597,47 @@ func (s *service) resolveDNSExclusions(ctx context.Context, limits *types.Networ
 					"resolved_ips": ips,
 					"cidrs":        cidrs,
 				}).Info("DNS hostnames resolved and converted to CIDR exclusions")
+			}
+		}
+	}
+
+	return nil
+}
+
+// resolveDockerNetworkExclusions resolves Docker network exclusions and updates exclusion networks with discovered CIDRs
+func (s *service) resolveDockerNetworkExclusions(ctx context.Context, limits *types.NetworkLimits) error {
+	if limits == nil || len(limits.ExcludeNetworks) == 0 {
+		return nil
+	}
+
+	for i, exclude := range limits.ExcludeNetworks {
+		if exclude.Type == "docker-networks" && exclude.DockerNetworkConfig != nil {
+			s.log.WithFields(logrus.Fields{
+				"network_names": exclude.DockerNetworkConfig.Names,
+			}).Info("Discovering Docker networks for exclusion")
+
+			cidrs, err := s.networkInspector.DiscoverNetworks(ctx, exclude.DockerNetworkConfig)
+			if err != nil {
+				return fmt.Errorf("failed to discover Docker networks: %w", err)
+			}
+
+			if len(cidrs) > 0 {
+				// Convert Docker network exclusion to CIDR exclusion with discovered CIDRs
+				limits.ExcludeNetworks[i] = types.ExcludeNetwork{
+					Type: "cidr",
+					CIDRConfig: &types.CIDRConfig{
+						Ranges: cidrs,
+					},
+				}
+
+				s.log.WithFields(logrus.Fields{
+					"network_names":    exclude.DockerNetworkConfig.Names,
+					"discovered_cidrs": cidrs,
+				}).Info("Docker networks discovered and converted to CIDR exclusions")
+			} else {
+				s.log.WithFields(logrus.Fields{
+					"network_names": exclude.DockerNetworkConfig.Names,
+				}).Warn("No Docker networks found for exclusion")
 			}
 		}
 	}
