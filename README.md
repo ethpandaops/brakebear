@@ -191,6 +191,29 @@ To connect to the VM, run:
 ssh brakebear@orb
 ```
 
+#### Useful commands for testing on a container
+
+```sh
+# Using speedtest-cli
+docker run --rm --name=demo -it gists/speedtest-cli
+
+# Using wget
+docker run --rm --name=demo -it alpine sh -c "apk update && apk add wget && exec wget -4 -O /dev/null https://speed.af.de/files/100MB.bin" # IPv4
+docker run --rm --name=demo -it alpine sh -c "apk update && apk add wget && exec wget -6 -O /dev/null https://speed.af.de/files/100MB.bin" # IPv6
+docker run --rm --name=demo -it alpine sh -c "apk update && apk add wget && exec wget -4 -O /dev/null https://speed.af.de/files/1GB.bin" # IPv4
+docker run --rm --name=demo -it alpine sh -c "apk update && apk add wget && exec wget -6 -O /dev/null https://speed.af.de/files/1GB.bin" # IPv6
+
+# Using iperf3
+docker run --network=shared --rm --name=demo -it alpine sh -c "apk update && apk add wget iperf3 && exec iperf3 -c speed.af.de -p 5200 -P 10 -f m -4" # IPv4 Upload
+docker run --network=shared --rm --name=demo -it alpine sh -c "apk update && apk add wget iperf3 && exec iperf3 -c speed.af.de -p 5200 -P 10 -f m -6" # IPv6 Upload
+docker run --network=shared --rm --name=demo -it alpine sh -c "apk update && apk add wget iperf3 && exec iperf3 -c speed.af.de -p 5200 -P 10 -f m -4 -R" # IPv4 Download
+docker run --network=shared --rm --name=demo -it alpine sh -c "apk update && apk add wget iperf3 && exec iperf3 -c speed.af.de -p 5200 -P 10 -f m -6 -R" # IPv6 Download
+
+# Ping
+docker run --rm --name=demo -it alpine sh -c "ping google.com" # IPv4
+docker run --rm --name=demo -it alpine sh -c "ping -6 google.com" # IPv6
+```
+
 ## License
 
 This project is licensed under the [GNU GPL-3.0](LICENSE).
