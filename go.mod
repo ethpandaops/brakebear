@@ -3,7 +3,7 @@ module github.com/ethpandaops/brakebear
 go 1.24.7
 
 require (
-	github.com/docker/docker v28.5.1+incompatible
+	github.com/docker/docker v28.5.2+incompatible
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/viper v1.21.0
